@@ -2,8 +2,10 @@ using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Sockets;
 
 namespace EPNMonitoring
 {
@@ -17,6 +19,11 @@ namespace EPNMonitoring
         private readonly string _crashReportFolder;
         private readonly string _crashReportDestinationFolder;
         private readonly int _crashReportCheckIntervalSeconds;
+        private readonly int _licenseCheckIntervalSeconds;
+        private readonly string _expectedWindowsEdition;
+        private readonly string _kmsServer;
+        private readonly int _kmsServerPort;
+        private readonly string _kmsDnsEntry;
 
         public Worker(
             ILogger<Worker> logger,
@@ -35,21 +42,38 @@ namespace EPNMonitoring
             _crashReportDestinationFolder = _configuration.GetValue<string>("CrashReportMonitor:DestinationFolder");
             _crashReportCheckIntervalSeconds = _configuration.GetValue<int>("CrashReportMonitor:CheckIntervalSeconds", 60);
 
+            // Windows license monitor config
+            _licenseCheckIntervalSeconds = _configuration.GetValue<int>("WindowsLicenseMonitor:CheckIntervalSeconds", 3600);
+            _expectedWindowsEdition = _configuration.GetValue<string>("WindowsLicenseMonitor:ExpectedEdition", "Enterprise");
+            _kmsServer = _configuration.GetValue<string>("WindowsLicenseMonitor:KmsServer", null);
+            _kmsServerPort = _configuration.GetValue<int>("WindowsLicenseMonitor:KmsServerPort", 1688);
+            _kmsDnsEntry = _configuration.GetValue<string>("WindowsLicenseMonitor:KmsDnsEntry", "_vlmcs._tcp");
+
             // Enable Application Insights diagnostics
             EnableApplicationInsightsDiagnostics();
         }
 
         /// <summary>
         /// Enables Application Insights internal diagnostics logging to capture telemetry send errors.
-        /// Errors will be logged using the provided ILogger and written to a file.
+        /// Errors will be logged using the provided ILogger and written to a file with timestamps.
         /// </summary>
         private void EnableApplicationInsightsDiagnostics()
         {
-            // Write Application Insights internal logs to a file for diagnostics
-            var logFilePath = "ai-internal.log";
-            if (!System.Diagnostics.Trace.Listeners.OfType<System.Diagnostics.TextWriterTraceListener>().Any(l => l.Writer is StreamWriter sw && sw.BaseStream is FileStream fs && fs.Name == logFilePath))
+            // Read the log file path from configuration, fallback to default if not set
+            var logFilePath = _configuration.GetValue<string>("LocalLog:FilePath") ?? "ai-internal.log";
+
+            // Ensure the directory exists
+            var logDir = Path.GetDirectoryName(logFilePath);
+            if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
             {
-                System.Diagnostics.Trace.Listeners.Add(new System.Diagnostics.TextWriterTraceListener(logFilePath));
+                Directory.CreateDirectory(logDir);
+            }
+
+            // Add a timestamped trace listener for Application Insights internal logs
+            if (!System.Diagnostics.Trace.Listeners.OfType<TimestampedTextWriterTraceListener>()
+                .Any(l => l.Writer is StreamWriter sw && sw.BaseStream is FileStream fs && fs.Name == logFilePath))
+            {
+                System.Diagnostics.Trace.Listeners.Add(new TimestampedTextWriterTraceListener(logFilePath));
                 System.Diagnostics.Trace.AutoFlush = true;
             }
         }
@@ -157,6 +181,117 @@ namespace EPNMonitoring
         }
 
         /// <summary>
+        /// Checks if the Windows edition matches the expected value, if the KMS server port is reachable,
+        /// and if the DNS entry exists. Logs detailed errors locally and sends telemetry if any check fails.
+        /// </summary>
+        private void CheckWindowsEditionAndKms()
+        {
+            string edition = GetWindowsEdition();
+            bool editionOk = edition.Equals(_expectedWindowsEdition, StringComparison.OrdinalIgnoreCase);
+
+            bool kmsPortOk = true;
+            string kmsPortError = null;
+            if (!string.IsNullOrWhiteSpace(_kmsServer))
+            {
+                try
+                {
+                    using var client = new TcpClient();
+                    var task = client.ConnectAsync(_kmsServer, _kmsServerPort);
+                    if (!task.Wait(TimeSpan.FromSeconds(3)) || !client.Connected)
+                    {
+                        kmsPortOk = false;
+                        kmsPortError = $"KMS server '{_kmsServer}' port {_kmsServerPort} not reachable (timeout or refused).";
+                        _logger.LogError(kmsPortError);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    kmsPortOk = false;
+                    kmsPortError = $"KMS server '{_kmsServer}' port {_kmsServerPort} check failed: {ex.Message}";
+                    _logger.LogError(kmsPortError);
+                }
+            }
+
+            bool dnsOk = true;
+            string dnsError = null;
+            if (!string.IsNullOrWhiteSpace(_kmsDnsEntry))
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "nslookup",
+                        Arguments = $"-type=all {_kmsDnsEntry}",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using var process = Process.Start(psi);
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+
+                    if (!output.Contains(_kmsDnsEntry, StringComparison.OrdinalIgnoreCase) || output.Contains("***"))
+                    {
+                        dnsOk = false;
+                        dnsError = $"DNS entry '{_kmsDnsEntry}' not found or invalid.";
+                        _logger.LogError(dnsError);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    dnsOk = false;
+                    dnsError = $"DNS entry '{_kmsDnsEntry}' check failed: {ex.Message}";
+                    _logger.LogError(dnsError);
+                }
+            }
+
+            if (!editionOk)
+            {
+                string editionError = $"Windows edition mismatch: Detected '{edition}', expected '{_expectedWindowsEdition}'.";
+                _logger.LogError(editionError);
+            }
+
+            // Only send telemetry if edition is not as expected, KMS port check fails, or DNS check fails
+            if (!editionOk || !kmsPortOk || !dnsOk)
+            {
+                string message = $"Windows license check: Edition: {edition} (expected: {_expectedWindowsEdition}), " +
+                                 $"KMS Port: {(kmsPortOk ? "OK" : kmsPortError)}, DNS: {(dnsOk ? "OK" : dnsError)}";
+                _logger.LogWarning(message);
+
+                var telemetry = new EventTelemetry("WindowsLicenseCheckFailed")
+                {
+                    Timestamp = DateTimeOffset.Now
+                };
+                telemetry.Properties["DetectedEdition"] = edition;
+                telemetry.Properties["ExpectedEdition"] = _expectedWindowsEdition;
+                telemetry.Properties["KmsServer"] = _kmsServer ?? "";
+                telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
+                telemetry.Properties["KmsPortStatus"] = kmsPortOk ? "OK" : kmsPortError ?? "Unknown error";
+                telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry ?? "";
+                telemetry.Properties["KmsDnsStatus"] = dnsOk ? "OK" : dnsError ?? "Unknown error";
+
+                _telemetryClient.TrackEvent(telemetry);
+                _telemetryClient.Flush();
+            }
+        }
+
+        /// <summary>
+        /// Gets the Windows edition from the registry.
+        /// </summary>
+        private string GetWindowsEdition()
+        {
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+                return key?.GetValue("EditionID")?.ToString() ?? "Unknown";
+            }
+            catch
+            {
+                return "Unknown";
+            }
+        }
+
+        /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
         /// <param name="stoppingToken">Cancellation token.</param>
@@ -164,6 +299,7 @@ namespace EPNMonitoring
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             var crashReportTimer = 0;
+            var licenseCheckTimer = _licenseCheckIntervalSeconds;
             while (!stoppingToken.IsCancellationRequested)
             {
                 // Process monitor check
@@ -176,8 +312,16 @@ namespace EPNMonitoring
                     crashReportTimer = _crashReportCheckIntervalSeconds;
                 }
 
+                // Windows license check based on its own interval
+                if (licenseCheckTimer <= 0)
+                {
+                    CheckWindowsEditionAndKms();
+                    licenseCheckTimer = _licenseCheckIntervalSeconds;
+                }
+
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
+                licenseCheckTimer--;
             }
         }
     }
