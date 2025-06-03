@@ -5,8 +5,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
-using System.Net.Sockets;
 using System.Management;
+using System.Net;
+using System.Net.Sockets;
 
 
 namespace EPNMonitoring
@@ -237,6 +238,8 @@ namespace EPNMonitoring
 
             bool kmsPortOk = true;
             string kmsPortError = null;
+
+            string kmsPortInformation = null;
             if (!string.IsNullOrWhiteSpace(_kmsServer))
             {
                 try
@@ -262,7 +265,19 @@ namespace EPNMonitoring
                     }
                     else if (_verboseLoggingLocal)
                     {
-                        _logger.LogInformation("KMS server '{KmsServer}' port {KmsPort} is reachable.", _kmsServer, _kmsServerPort);
+                        kmsPortInformation = $"KMS server '{_kmsServer}' port {_kmsServerPort} is reachable.";
+                        _logger.LogInformation(kmsPortInformation);
+                        if (_verboseLoggingAppInsight)
+                        {
+                            var telemetry = new EventTelemetry("KmsPortOpened")
+                            {
+                                Timestamp = DateTimeOffset.Now
+                            };
+                            telemetry.Properties["KmsServer"] = _kmsServer;
+                            telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
+                            telemetry.Properties["Information"] = kmsPortInformation;
+                            _telemetryClient.TrackEvent(telemetry);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -286,6 +301,7 @@ namespace EPNMonitoring
 
             bool dnsOk = true;
             string dnsError = null;
+            string dnsInformation = null;
             if (!string.IsNullOrWhiteSpace(_kmsDnsEntry))
             {
                 try
@@ -306,6 +322,7 @@ namespace EPNMonitoring
                     {
                         dnsOk = false;
                         dnsError = $"DNS entry '{_kmsDnsEntry}' not found or invalid.";
+
                         _logger.LogError(dnsError);
                         if (_verboseLoggingAppInsight)
                         {
@@ -320,7 +337,19 @@ namespace EPNMonitoring
                     }
                     else if (_verboseLoggingLocal)
                     {
-                        _logger.LogInformation("DNS entry '{KmsDnsEntry}' is present.", _kmsDnsEntry);
+                        dnsInformation = $"DNS entry ' _kmsDnsEntry' is present.";
+                        _logger.LogInformation(dnsInformation);
+                        if (_verboseLoggingAppInsight)
+                        {
+                            var telemetry = new EventTelemetry("KmsDnsSuccess")
+                            {
+                                Timestamp = DateTimeOffset.Now
+                            };
+                            telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry;
+                            telemetry.Properties["Information"] = dnsInformation;
+                            _telemetryClient.TrackEvent(telemetry);
+                        }
+
                     }
                 }
                 catch (Exception ex)
@@ -602,6 +631,7 @@ namespace EPNMonitoring
                 _telemetryClient.Flush();
         }
 
+
         /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
@@ -651,6 +681,7 @@ namespace EPNMonitoring
                     CheckDevicesAndSendTelemetry();
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
                 }
+
 
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
