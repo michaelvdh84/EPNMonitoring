@@ -34,6 +34,9 @@ namespace EPNMonitoring
         private readonly bool _verboseLoggingAppInsight;
         private readonly List<string> _devicesToCheck;
         private readonly int _deviceCheckIntervalSeconds;
+        private readonly string _portTestServer;
+        private readonly List<PortTestConfig> _portTests;
+        private readonly int _portTestsCheckIntervalSeconds;
 
         public Worker(
             ILogger<Worker> logger,
@@ -67,6 +70,12 @@ namespace EPNMonitoring
             // Device monitor config
             _devicesToCheck = _configuration.GetSection("DeviceMonitor:Devices").Get<List<string>>() ?? new List<string>();
             _deviceCheckIntervalSeconds = _configuration.GetValue<int>("DeviceMonitor:CheckIntervalSeconds", 60);
+
+            // Port tests monitor config
+            var portTestsMonitorSection = _configuration.GetSection("PortTestsMonitor");
+            _portTestServer = portTestsMonitorSection.GetValue<string>("LogonServer");
+            _portTests = portTestsMonitorSection.GetSection("PortTests").Get<List<PortTestConfig>>() ?? new List<PortTestConfig>();
+            _portTestsCheckIntervalSeconds = portTestsMonitorSection.GetValue<int>("CheckIntervalSeconds", 60);
 
             // Verbose logging config
             _verboseLoggingLocal = _configuration.GetValue<bool>("VerboseLogging:Local", false);
@@ -631,6 +640,72 @@ namespace EPNMonitoring
                 _telemetryClient.Flush();
         }
 
+        /// <summary>
+        /// Checks if the specified server ports are open and sends the result to Application Insights.
+        /// </summary>
+        private void CheckServerPortsAndSendTelemetry()
+        {
+            if (string.IsNullOrWhiteSpace(_portTestServer))
+            {
+                _logger.LogWarning("No server specified for port tests.");
+                if (_verboseLoggingAppInsight)
+                {
+                    var telemetry = new EventTelemetry("PortTestServerNotSpecified")
+                    {
+                        Timestamp = DateTimeOffset.Now
+                    };
+                    telemetry.Properties["Reason"] = "No server specified in configuration.";
+                    _telemetryClient.TrackEvent(telemetry);
+                    _telemetryClient.Flush();
+                }
+                return;
+            }
+
+            if (_verboseLoggingLocal)
+                _logger.LogInformation("Checking ports on server: {Server}", _portTestServer);
+
+            foreach (var test in _portTests)
+            {
+                string result;
+                try
+                {
+                    using var client = new TcpClient();
+                    var connectTask = client.ConnectAsync(_portTestServer, test.Port);
+                    if (connectTask.Wait(TimeSpan.FromSeconds(3)) && client.Connected)
+                    {
+                        result = "OPEN";
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
+                    }
+                    else
+                    {
+                        result = "CLOSED or TIMEOUT";
+                        _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result = "ERROR";
+                    _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
+                }
+
+                if (_verboseLoggingAppInsight)
+                {
+                    var telemetry = new EventTelemetry("ServerPortTest")
+                    {
+                        Timestamp = DateTimeOffset.Now
+                    };
+                    telemetry.Properties["Server"] = _portTestServer;
+                    telemetry.Properties["Title"] = test.Title;
+                    telemetry.Properties["Port"] = test.Port.ToString();
+                    telemetry.Properties["Result"] = result;
+                    _telemetryClient.TrackEvent(telemetry);
+                }
+            }
+
+            if (_verboseLoggingAppInsight)
+                _telemetryClient.Flush();
+        }
 
         /// <summary>
         /// Main execution loop for the background service.
@@ -644,6 +719,7 @@ namespace EPNMonitoring
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
             var processCheckTimer = _checkIntervalSeconds;
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
+            var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -682,6 +758,12 @@ namespace EPNMonitoring
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
                 }
 
+                // Port tests check based on its own interval
+                if (portTestsCheckTimer <= 0)
+                {
+                    CheckServerPortsAndSendTelemetry();
+                    portTestsCheckTimer = _portTestsCheckIntervalSeconds;
+                }
 
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
@@ -689,6 +771,7 @@ namespace EPNMonitoring
                 websiteCheckTimer--;
                 processCheckTimer--;
                 deviceCheckTimer--;
+                portTestsCheckTimer--;
             }
         }
     }
