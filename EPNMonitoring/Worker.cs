@@ -100,8 +100,15 @@ namespace EPNMonitoring
             _portTestsCheckIntervalSeconds = portTestsMonitorSection.GetValue<int>("CheckIntervalSeconds", 60);
 
             // Verbose logging config
+            // Ensure _verboseLoggingLocal is always set from config
             _verboseLoggingLocal = _configuration.GetValue<bool>("VerboseLogging:Local", false);
             _verboseLoggingAppInsight = _configuration.GetValue<bool>("VerboseLogging:AppInsight", false);
+
+            // Log the current verbose logging settings for diagnostics
+            if (_verboseLoggingLocal)
+                _logger.LogInformation("Verbose local logging is ENABLED by configuration.");
+            else
+                _logger.LogInformation("Verbose local logging is DISABLED by configuration.");
 
             EnableApplicationInsightsDiagnostics();
         }
@@ -116,9 +123,17 @@ namespace EPNMonitoring
                 var logFilePath = _configuration.GetValue<string>("LocalLog:FilePath") ?? "ai-internal.log";
                 var logDir = Path.GetDirectoryName(logFilePath);
                 if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
-
                 {
                     Directory.CreateDirectory(logDir);
+                }
+
+                // Extra diagnostics: log file path and directory existence
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Attempting to initialize local log file at: {LogFilePath}", logFilePath);
+                if (!Directory.Exists(logDir))
+                {
+                    if (_verboseLoggingLocal)
+                        _logger.LogWarning("Log directory does not exist after creation attempt: {LogDir}", logDir);
                 }
 
                 if (!System.Diagnostics.Trace.Listeners.OfType<TimestampedTextWriterTraceListener>()
@@ -126,7 +141,17 @@ namespace EPNMonitoring
                 {
                     System.Diagnostics.Trace.Listeners.Add(new TimestampedTextWriterTraceListener(logFilePath));
                     System.Diagnostics.Trace.AutoFlush = true;
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("Local log file listener added successfully: {LogFilePath}", logFilePath);
                 }
+                else
+                {
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("Local log file listener already exists for: {LogFilePath}", logFilePath);
+                }
+
+                // Test write to log file
+                System.Diagnostics.Trace.WriteLine("Local log file initialized successfully.");
             }
             catch (Exception ex)
             {
@@ -139,6 +164,8 @@ namespace EPNMonitoring
                 {
                     // Swallow to avoid recursive errors
                 }
+                // Also log to ILogger for visibility
+                _logger.LogError(ex, "Exception occurred while initializing local log file.");
             }
         }
 
@@ -159,7 +186,7 @@ namespace EPNMonitoring
                 {
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("Process '{ProcessName}' is NOT running: {IsRunning}", exe, isRunning);
-                    _logger.LogWarning("Process '{ProcessName}' is NOT running!", exe);
+                    _logger.LogWarning("Process '{ProcessName}' is NOT running!");
 
                     if (_verboseLoggingAppInsight)
                     {
