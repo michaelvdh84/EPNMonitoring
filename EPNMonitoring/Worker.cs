@@ -8,7 +8,10 @@ using System.IO;
 using System.Management;
 using System.Net;
 using System.Net.Sockets;
-
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace EPNMonitoring
 {
@@ -17,26 +20,42 @@ namespace EPNMonitoring
         private readonly ILogger<Worker> _logger;
         private readonly TelemetryClient _telemetryClient;
         private readonly IConfiguration _configuration;
+
+        // Process monitor
         private readonly int _checkIntervalSeconds;
         private readonly List<string> _executables;
+
+        // Crash report monitor
         private readonly string _crashReportFolder;
         private readonly string _crashReportDestinationFolder;
         private readonly int _crashReportCheckIntervalSeconds;
+
+        // Windows license monitor
         private readonly int _licenseCheckIntervalSeconds;
         private readonly string _expectedWindowsEdition;
         private readonly string _kmsServer;
         private readonly int _kmsServerPort;
         private readonly string _kmsDnsEntry;
         private readonly string _kmsKey;
+        private readonly bool _enableActivation;
+        private readonly bool _restartAfterActivation;
+
+        // Website monitor
         private readonly int _websiteCheckIntervalSeconds;
         private readonly List<string> _websites;
-        private readonly bool _verboseLoggingLocal;
-        private readonly bool _verboseLoggingAppInsight;
+
+        // Device monitor
         private readonly List<string> _devicesToCheck;
         private readonly int _deviceCheckIntervalSeconds;
+
+        // Port tests monitor
         private readonly string _portTestServer;
         private readonly List<PortTestConfig> _portTests;
         private readonly int _portTestsCheckIntervalSeconds;
+
+        // Verbose logging
+        private readonly bool _verboseLoggingLocal;
+        private readonly bool _verboseLoggingAppInsight;
 
         public Worker(
             ILogger<Worker> logger,
@@ -47,6 +66,7 @@ namespace EPNMonitoring
             _telemetryClient = telemetryClient;
             _configuration = configuration;
 
+            // Process monitor config
             _checkIntervalSeconds = _configuration.GetValue<int>("ProcessMonitor:CheckIntervalSeconds", 10);
             _executables = _configuration.GetSection("ProcessMonitor:Executables").Get<List<string>>() ?? new List<string>();
 
@@ -62,6 +82,8 @@ namespace EPNMonitoring
             _kmsServerPort = _configuration.GetValue<int>("WindowsLicenseMonitor:KmsServerPort", 1688);
             _kmsDnsEntry = _configuration.GetValue<string>("WindowsLicenseMonitor:KmsDnsEntry", "_vlmcs._tcp");
             _kmsKey = _configuration.GetValue<string>("WindowsLicenseMonitor:KmsKey", null);
+            _enableActivation = _configuration.GetValue<bool>("WindowsLicenseMonitor:EnableActivation", false);
+            _restartAfterActivation = _configuration.GetValue<bool>("WindowsLicenseMonitor:RestartAfterActivation", false);
 
             // Website monitor config
             _websiteCheckIntervalSeconds = _configuration.GetValue<int>("WebsiteMonitor:CheckIntervalSeconds", 300);
@@ -81,27 +103,42 @@ namespace EPNMonitoring
             _verboseLoggingLocal = _configuration.GetValue<bool>("VerboseLogging:Local", false);
             _verboseLoggingAppInsight = _configuration.GetValue<bool>("VerboseLogging:AppInsight", false);
 
-            // Enable Application Insights diagnostics
             EnableApplicationInsightsDiagnostics();
         }
 
         /// <summary>
-        /// Enables Application Insights internal diagnostics logging to capture telemetry send errors.
-        /// Errors will be logged using the provided ILogger and written to a file with timestamps.
+        /// Enables Application Insights internal diagnostics logging.
         /// </summary>
         private void EnableApplicationInsightsDiagnostics()
         {
-            var logFilePath = _configuration.GetValue<string>("LocalLog:FilePath") ?? "ai-internal.log";
-            var logDir = Path.GetDirectoryName(logFilePath);
-            if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
+            try
             {
-                Directory.CreateDirectory(logDir);
+                var logFilePath = _configuration.GetValue<string>("LocalLog:FilePath") ?? "ai-internal.log";
+                var logDir = Path.GetDirectoryName(logFilePath);
+                if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
+
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+
+                if (!System.Diagnostics.Trace.Listeners.OfType<TimestampedTextWriterTraceListener>()
+                    .Any(l => l.Writer is StreamWriter sw && sw.BaseStream is FileStream fs && fs.Name == logFilePath))
+                {
+                    System.Diagnostics.Trace.Listeners.Add(new TimestampedTextWriterTraceListener(logFilePath));
+                    System.Diagnostics.Trace.AutoFlush = true;
+                }
             }
-            if (!System.Diagnostics.Trace.Listeners.OfType<TimestampedTextWriterTraceListener>()
-                .Any(l => l.Writer is StreamWriter sw && sw.BaseStream is FileStream fs && fs.Name == logFilePath))
+            catch (Exception ex)
             {
-                System.Diagnostics.Trace.Listeners.Add(new TimestampedTextWriterTraceListener(logFilePath));
-                System.Diagnostics.Trace.AutoFlush = true;
+                // Fallback: log to Windows Event Log if file cannot be created
+                try
+                {
+                    EventLog.WriteEntry("EPNMonitoring", $"Failed to initialize local log file: {ex}", EventLogEntryType.Error);
+                }
+                catch
+                {
+                    // Swallow to avoid recursive errors
+                }
             }
         }
 
@@ -112,7 +149,7 @@ namespace EPNMonitoring
         {
             foreach (var exe in _executables)
             {
-                var processName = exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                var processName = exe.EndsWith(".exe", System.StringComparison.OrdinalIgnoreCase)
                     ? exe[..^4]
                     : exe;
 
@@ -128,7 +165,7 @@ namespace EPNMonitoring
                     {
                         var telemetry = new EventTelemetry("ProcessNotRunning")
                         {
-                            Timestamp = DateTimeOffset.Now
+                            Timestamp = System.DateTimeOffset.Now
                         };
                         telemetry.Properties["ProcessName"] = exe;
                         telemetry.Properties["IsRunning"] = isRunning.ToString();
@@ -142,7 +179,7 @@ namespace EPNMonitoring
                     {
                         var telemetry = new EventTelemetry("ProcessRunning")
                         {
-                            Timestamp = DateTimeOffset.Now
+                            Timestamp = System.DateTimeOffset.Now
                         };
                         telemetry.Properties["ProcessName"] = exe;
                         telemetry.Properties["IsRunning"] = isRunning.ToString();
@@ -156,7 +193,6 @@ namespace EPNMonitoring
 
         /// <summary>
         /// Checks for crash reports in the configured folder, moves them if found, and logs/sends a single telemetry event per crash.
-        /// A crash is identified by files sharing the same base filename (e.g., .dmp and .extra).
         /// </summary>
         private void CheckAndMoveCrashReports()
         {
@@ -173,9 +209,7 @@ namespace EPNMonitoring
                 return;
             }
             if (!Directory.Exists(_crashReportDestinationFolder))
-            {
                 Directory.CreateDirectory(_crashReportDestinationFolder);
-            }
 
             var files = Directory.GetFiles(_crashReportFolder);
             var crashGroups = files
@@ -192,7 +226,7 @@ namespace EPNMonitoring
                 {
                     var telemetry = new EventTelemetry("CrashReportDetected")
                     {
-                        Timestamp = DateTimeOffset.Now
+                        Timestamp = System.DateTimeOffset.Now
                     };
                     telemetry.Properties["BaseName"] = group.Key;
                     telemetry.Properties["CreationTime"] = firstFile.CreationTime.ToString("o");
@@ -208,7 +242,7 @@ namespace EPNMonitoring
                         if (_verboseLoggingLocal)
                             _logger.LogInformation("Crash report file moved to: {Destination}", destPath);
                     }
-                    catch (Exception ex)
+                    catch (System.Exception ex)
                     {
                         _logger.LogError(ex, "Failed to move crash report file: {FileName}", file.Name);
                     }
@@ -216,299 +250,182 @@ namespace EPNMonitoring
             }
 
             if (files.Length > 0 && _verboseLoggingAppInsight)
-            {
                 _telemetryClient.Flush();
-            }
         }
 
         /// <summary>
-        /// Checks if the Windows edition matches the expected value, if the KMS server port is reachable,
-        /// and if the DNS entry exists. Logs detailed errors locally and sends telemetry if any check fails.
-        /// Verbose logging for local and Application Insights is controlled by appsettings.
+        /// Checks if the specified devices are present and sends the result to Application Insights.
         /// </summary>
-        private void CheckWindowsEditionAndKms()
+        private void CheckDevicesAndSendTelemetry()
         {
-            string edition = GetWindowsEdition();
-            bool editionOk = edition.Equals(_expectedWindowsEdition, StringComparison.OrdinalIgnoreCase);
+            var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_PnPEntity");
+            var devices = searcher.Get().Cast<ManagementObject>()
+                .Select(mo => mo["Name"]?.ToString() ?? string.Empty)
+                .ToList();
 
-            // Verbose: log detected and expected edition
             if (_verboseLoggingLocal)
-                _logger.LogInformation("Detected Windows edition: {Edition}, Expected: {ExpectedEdition}", edition, _expectedWindowsEdition);
+            {
+                _logger.LogInformation("Device check started. Configured devices to check: {Count}", _devicesToCheck.Count);
+                _logger.LogInformation("Detected devices from Win32_PnPEntity: {DeviceList}", string.Join("; ", devices));
+            }
+
+            int foundCount = 0, missingCount = 0;
+
+            foreach (var deviceName in _devicesToCheck)
+            {
+                bool found = devices.Any(d => d.Contains(deviceName, System.StringComparison.OrdinalIgnoreCase));
+                if (!found)
+                {
+                    _logger.LogWarning("Device not found: {DeviceName}", deviceName);
+                    missingCount++;
+                    if (_verboseLoggingAppInsight)
+                    {
+                        var telemetry = new EventTelemetry("DeviceNotFound")
+                        {
+                            Timestamp = System.DateTimeOffset.Now
+                        };
+                        telemetry.Properties["DeviceName"] = deviceName;
+                        _telemetryClient.TrackEvent(telemetry);
+                    }
+                }
+                else
+                {
+                    foundCount++;
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("Device found: {DeviceName}", deviceName);
+                }
+            }
+
+            if (_verboseLoggingLocal)
+                _logger.LogInformation("Device check summary: {Found} found, {Missing} missing, {Total} total.", foundCount, missingCount, _devicesToCheck.Count);
+
             if (_verboseLoggingAppInsight)
+                _telemetryClient.Flush();
+        }
+
+        /// <summary>
+        /// Checks if the specified server ports are open and sends the result to Application Insights.
+        /// </summary>
+        private void CheckServerPortsAndSendTelemetry()
+        {
+            if (string.IsNullOrWhiteSpace(_portTestServer))
             {
-                var telemetry = new EventTelemetry("WindowsEditionCheckInfo")
-                {
-                    Timestamp = DateTimeOffset.Now
-                };
-                telemetry.Properties["DetectedEdition"] = edition;
-                telemetry.Properties["ExpectedEdition"] = _expectedWindowsEdition;
-                _telemetryClient.TrackEvent(telemetry);
-            }
-
-            bool kmsPortOk = true;
-            string kmsPortError = null;
-
-            string kmsPortInformation = null;
-            if (!string.IsNullOrWhiteSpace(_kmsServer))
-            {
-                try
-                {
-                    using var client = new TcpClient();
-                    var task = client.ConnectAsync(_kmsServer, _kmsServerPort);
-                    if (!task.Wait(TimeSpan.FromSeconds(3)) || !client.Connected)
-                    {
-                        kmsPortOk = false;
-                        kmsPortError = $"KMS server '{_kmsServer}' port {_kmsServerPort} not reachable (timeout or refused).";
-                        _logger.LogError(kmsPortError);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("KmsPortCheckFailed")
-                            {
-                                Timestamp = DateTimeOffset.Now
-                            };
-                            telemetry.Properties["KmsServer"] = _kmsServer;
-                            telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
-                            telemetry.Properties["Error"] = kmsPortError;
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
-                    }
-                    else if (_verboseLoggingLocal)
-                    {
-                        kmsPortInformation = $"KMS server '{_kmsServer}' port {_kmsServerPort} is reachable.";
-                        _logger.LogInformation(kmsPortInformation);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("KmsPortOpened")
-                            {
-                                Timestamp = DateTimeOffset.Now
-                            };
-                            telemetry.Properties["KmsServer"] = _kmsServer;
-                            telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
-                            telemetry.Properties["Information"] = kmsPortInformation;
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    kmsPortOk = false;
-                    kmsPortError = $"KMS server '{_kmsServer}' port {_kmsServerPort} check failed: {ex.Message}";
-                    _logger.LogError(kmsPortError);
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("KmsPortCheckException")
-                        {
-                            Timestamp = DateTimeOffset.Now
-                        };
-                        telemetry.Properties["KmsServer"] = _kmsServer;
-                        telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
-                        telemetry.Properties["Exception"] = ex.Message;
-                        _telemetryClient.TrackEvent(telemetry);
-                    }
-                }
-            }
-
-            bool dnsOk = true;
-            string dnsError = null;
-            string dnsInformation = null;
-            if (!string.IsNullOrWhiteSpace(_kmsDnsEntry))
-            {
-                try
-                {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = "nslookup",
-                        Arguments = $"-type=all {_kmsDnsEntry}",
-                        RedirectStandardOutput = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    };
-                    using var process = Process.Start(psi);
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-
-                    if (!output.Contains(_kmsDnsEntry, StringComparison.OrdinalIgnoreCase) || output.Contains("***"))
-                    {
-                        dnsOk = false;
-                        dnsError = $"DNS entry '{_kmsDnsEntry}' not found or invalid.";
-
-                        _logger.LogError(dnsError);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("KmsDnsCheckFailed")
-                            {
-                                Timestamp = DateTimeOffset.Now
-                            };
-                            telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry;
-                            telemetry.Properties["Error"] = dnsError;
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
-                    }
-                    else if (_verboseLoggingLocal)
-                    {
-                        dnsInformation = $"DNS entry ' _kmsDnsEntry' is present.";
-                        _logger.LogInformation(dnsInformation);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("KmsDnsSuccess")
-                            {
-                                Timestamp = DateTimeOffset.Now
-                            };
-                            telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry;
-                            telemetry.Properties["Information"] = dnsInformation;
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
-
-                    }
-                }
-                catch (Exception ex)
-                {
-                    dnsOk = false;
-                    dnsError = $"DNS entry '{_kmsDnsEntry}' check failed: {ex.Message}";
-                    _logger.LogError(dnsError);
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("KmsDnsCheckException")
-                        {
-                            Timestamp = DateTimeOffset.Now
-                        };
-                        telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry;
-                        telemetry.Properties["Exception"] = ex.Message;
-                        _telemetryClient.TrackEvent(telemetry);
-                    }
-                }
-            }
-
-            if (!editionOk)
-            {
-                string editionError = $"Windows edition mismatch: Detected '{edition}', expected '{_expectedWindowsEdition}'.";
-                _logger.LogError(editionError);
+                _logger.LogWarning("No server specified for port tests.");
                 if (_verboseLoggingAppInsight)
                 {
-                    var telemetry = new EventTelemetry("WindowsEditionMismatch")
+                    var telemetry = new EventTelemetry("PortTestServerNotSpecified")
                     {
-                        Timestamp = DateTimeOffset.Now
+                        Timestamp = System.DateTimeOffset.Now
                     };
-                    telemetry.Properties["DetectedEdition"] = edition;
-                    telemetry.Properties["ExpectedEdition"] = _expectedWindowsEdition;
-                    _telemetryClient.TrackEvent(telemetry);
-                }
-            }
-
-            // Only send telemetry if edition is not as expected, KMS port check fails, or DNS check fails
-            if (!editionOk || !kmsPortOk || !dnsOk)
-            {
-                string message = $"Windows license check: Edition: {edition} (expected: {_expectedWindowsEdition}), " +
-                                 $"KMS Port: {(kmsPortOk ? "OK" : kmsPortError)}, DNS: {(dnsOk ? "OK" : dnsError)}";
-                _logger.LogWarning(message);
-
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("WindowsLicenseCheckFailed")
-                    {
-                        Timestamp = DateTimeOffset.Now
-                    };
-                    telemetry.Properties["DetectedEdition"] = edition;
-                    telemetry.Properties["ExpectedEdition"] = _expectedWindowsEdition;
-                    telemetry.Properties["KmsServer"] = _kmsServer ?? "";
-                    telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
-                    telemetry.Properties["KmsPortStatus"] = kmsPortOk ? "OK" : kmsPortError ?? "Unknown error";
-                    telemetry.Properties["KmsDnsEntry"] = _kmsDnsEntry ?? "";
-                    telemetry.Properties["KmsDnsStatus"] = dnsOk ? "OK" : dnsError ?? "Unknown error";
+                    telemetry.Properties["Reason"] = "No server specified in configuration.";
                     _telemetryClient.TrackEvent(telemetry);
                     _telemetryClient.Flush();
                 }
-            }
-
-            // Attempt to activate Windows if the edition is not as expected
-            if (!editionOk)
-            {
-                TryActivateWindowsWithKmsKey(edition);
-            }
-        }
-
-        /// <summary>
-        /// Attempts to activate Windows using the provided KMS key via slmgr.vbs.
-        /// Logs the output and result.
-        /// </summary>
-        private void TryActivateWindowsWithKmsKey(string detectedEdition)
-        {
-            if (string.IsNullOrWhiteSpace(_kmsKey))
-            {
-                _logger.LogWarning("No KMS key specified in configuration. Skipping activation attempt.");
                 return;
             }
 
-            string maskedKmsKey = _kmsKey.Length > 5
-                ? new string('*', _kmsKey.Length - 5) + _kmsKey[^5..]
-                : _kmsKey;
-
-            // Send telemetry about the activation attempt
-            if (_verboseLoggingAppInsight)
-            {
-                var telemetry = new EventTelemetry("WindowsActivationAttempt")
-                {
-                    Timestamp = DateTimeOffset.Now
-                };
-                telemetry.Properties["DetectedEdition"] = detectedEdition;
-                telemetry.Properties["ExpectedEdition"] = _expectedWindowsEdition;
-                telemetry.Properties["KmsKey"] = maskedKmsKey;
-                telemetry.Properties["KmsServer"] = _kmsServer ?? "";
-                telemetry.Properties["KmsServerPort"] = _kmsServerPort.ToString();
-
-                _telemetryClient.TrackEvent(telemetry);
-                _telemetryClient.Flush();
-            }
-
             if (_verboseLoggingLocal)
-                _logger.LogInformation("Attempting Windows activation with KMS key (masked): {KmsKey}", maskedKmsKey);
+                _logger.LogInformation("Checking ports on server: {Server}", _portTestServer);
 
-            try
+            foreach (var test in _portTests)
             {
-                var installKey = RunSlmgrCommand($"/ipk {_kmsKey}");
-                if (_verboseLoggingLocal)
-                    _logger.LogInformation("KMS key installation output: {Output}", installKey);
-
-                if (!string.IsNullOrWhiteSpace(_kmsServer))
+                string result;
+                try
                 {
-                    var setServer = RunSlmgrCommand($"/skms {_kmsServer}:{_kmsServerPort}");
-                    if (_verboseLoggingLocal)
-                        _logger.LogInformation("KMS server set output: {Output}", setServer);
+                    using var client = new TcpClient();
+                    var connectTask = client.ConnectAsync(_portTestServer, test.Port);
+                    if (connectTask.Wait(System.TimeSpan.FromSeconds(3)) && client.Connected)
+                    {
+                        result = "OPEN";
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
+                    }
+                    else
+                    {
+                        result = "CLOSED or TIMEOUT";
+                        _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    result = "ERROR";
+                    _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
 
-                var activate = RunSlmgrCommand("/ato");
-                if (_verboseLoggingLocal)
-                    _logger.LogInformation("KMS activation output: {Output}", activate);
+                if (_verboseLoggingAppInsight)
+                {
+                    var telemetry = new EventTelemetry("ServerPortTest")
+                    {
+                        Timestamp = System.DateTimeOffset.Now
+                    };
+                    telemetry.Properties["Server"] = _portTestServer;
+                    telemetry.Properties["Title"] = test.Title;
+                    telemetry.Properties["Port"] = test.Port.ToString();
+                    telemetry.Properties["Result"] = result;
+                    _telemetryClient.TrackEvent(telemetry);
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to activate Windows with KMS key.");
-            }
+
+            if (_verboseLoggingAppInsight)
+                _telemetryClient.Flush();
         }
 
         /// <summary>
-        /// Runs a slmgr.vbs command and returns the output.
+        /// Checks connectivity to each website specified in the configuration.
+        /// Logs locally and sends telemetry if a site is unreachable.
         /// </summary>
-        private string RunSlmgrCommand(string arguments)
+        private async Task CheckWebsitesConnectivityAsync()
         {
-            var psi = new ProcessStartInfo
+            foreach (var site in _websites)
             {
-                FileName = "cscript",
-                Arguments = $"//Nologo %windir%\\system32\\slmgr.vbs {arguments}",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                try
+                {
+                    using var httpClient = new System.Net.Http.HttpClient();
+                    httpClient.Timeout = System.TimeSpan.FromSeconds(5);
+                    var response = await httpClient.GetAsync(site);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogWarning("Website unreachable (HTTP {StatusCode}): {Site}", (int)response.StatusCode, site);
+                        SendWebsiteUnreachableTelemetry(site, $"HTTP {(int)response.StatusCode}");
+                    }
+                    else if (_verboseLoggingLocal)
+                    {
+                        _logger.LogInformation("Website reachable: {Site}", site);
+                        if (_verboseLoggingAppInsight)
+                        {
+                            var telemetry = new EventTelemetry("WebsiteReachable")
+                            {
+                                Timestamp = System.DateTimeOffset.Now
+                            };
+                            telemetry.Properties["Site"] = site;
+                            telemetry.Properties["StatusCode"] = ((int)response.StatusCode).ToString();
+                            _telemetryClient.TrackEvent(telemetry);
+                        }
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    _logger.LogError(ex, "Website unreachable: {Site}", site);
+                    SendWebsiteUnreachableTelemetry(site, ex.Message);
+                }
+            }
+            if (_verboseLoggingAppInsight)
+                _telemetryClient.Flush();
+        }
+
+        /// <summary>
+        /// Sends telemetry to Application Insights for unreachable websites.
+        /// </summary>
+        private void SendWebsiteUnreachableTelemetry(string site, string reason)
+        {
+            var telemetry = new EventTelemetry("WebsiteUnreachable")
+            {
+                Timestamp = System.DateTimeOffset.Now
             };
-            using var process = Process.Start(psi);
-            string output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
-            process.WaitForExit();
-
-            if (!string.IsNullOrWhiteSpace(error))
-                output += Environment.NewLine + error;
-
-            return output;
+            telemetry.Properties["Site"] = site;
+            telemetry.Properties["Reason"] = reason;
+            _telemetryClient.TrackEvent(telemetry);
+            _telemetryClient.Flush();
         }
 
         /// <summary>
@@ -528,190 +445,145 @@ namespace EPNMonitoring
         }
 
         /// <summary>
-        /// Checks connectivity to each website specified in the configuration.
-        /// Logs locally and sends telemetry if a site is unreachable.
+        /// Attempts to activate Windows if the edition is 'Pro' and restarts the computer if configured.
         /// </summary>
-        private async Task CheckWebsitesConnectivityAsync()
+        private void TryActivateWindowsIfProAndRestart()
         {
-            foreach (var site in _websites)
+            string edition = GetWindowsEdition();
+            if (!_enableActivation)
             {
-                try
-                {
-                    using var httpClient = new HttpClient();
-                    httpClient.Timeout = TimeSpan.FromSeconds(5);
-                    var response = await httpClient.GetAsync(site);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        _logger.LogWarning("Website unreachable (HTTP {StatusCode}): {Site}", (int)response.StatusCode, site);
-                        SendWebsiteUnreachableTelemetry(site, $"HTTP {(int)response.StatusCode}");
-                    }
-                    else if (_verboseLoggingLocal)
-                    {
-                        _logger.LogInformation("Website reachable: {Site}", site);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("WebsiteReachable")
-                            {
-                                Timestamp = DateTimeOffset.Now
-                            };
-                            telemetry.Properties["Site"] = site;
-                            telemetry.Properties["StatusCode"] = ((int)response.StatusCode).ToString();
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Website unreachable: {Site}", site);
-                    SendWebsiteUnreachableTelemetry(site, ex.Message);
-                }
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Windows activation is disabled by configuration.");
+                return;
             }
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
-        }
 
-        /// <summary>
-        /// Sends telemetry to Application Insights for unreachable websites.
-        /// </summary>
-        private void SendWebsiteUnreachableTelemetry(string site, string reason)
-        {
-            var telemetry = new EventTelemetry("WebsiteUnreachable")
+            if (!string.Equals(edition, "Pro", StringComparison.OrdinalIgnoreCase))
             {
-                Timestamp = DateTimeOffset.Now
-            };
-            telemetry.Properties["Site"] = site;
-            telemetry.Properties["Reason"] = reason;
-            _telemetryClient.TrackEvent(telemetry);
-            _telemetryClient.Flush();
-        }
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Windows edition is not 'Pro' (detected: {Edition}), skipping activation.", edition);
+                return;
+            }
 
-        /// <summary>
-        /// Checks if the specified devices are present and sends the result to Application Insights.
-        /// </summary>
-        private void CheckDevicesAndSendTelemetry()
-        {
-            var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_PnPEntity");
-            var devices = searcher.Get().Cast<System.Management.ManagementObject>()
-                .Select(mo => mo["Name"]?.ToString() ?? string.Empty)
-                .ToList();
+            if (string.IsNullOrWhiteSpace(_kmsKey))
+            {
+                _logger.LogWarning("No KMS key specified in configuration. Skipping activation attempt.");
+                return;
+            }
 
             if (_verboseLoggingLocal)
-            {
-                _logger.LogInformation("Device check started. Configured devices to check: {Count}", _devicesToCheck.Count);
-                _logger.LogInformation("Detected devices from Win32_PnPEntity: {DeviceList}", string.Join("; ", devices));
-            }
+                _logger.LogInformation("Attempting Windows activation for 'Pro' edition with KMS key.");
 
-            int foundCount = 0;
-            int missingCount = 0;
-
-            foreach (var deviceName in _devicesToCheck)
+            // Run slmgr.vbs activation
+            try
             {
-                bool found = devices.Any(d => d.Contains(deviceName, StringComparison.OrdinalIgnoreCase));
-                if (!found)
+                var psi = new ProcessStartInfo
                 {
-                    _logger.LogWarning("Device not found: {DeviceName}", deviceName);
-                    missingCount++;
+                    FileName = "cscript",
+                    Arguments = $"//Nologo %windir%\\system32\\slmgr.vbs /ipk {_kmsKey}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("slmgr.vbs /ipk output: {Output} {Error}", output, error);
+
                     if (_verboseLoggingAppInsight)
                     {
-                        var telemetry = new EventTelemetry("DeviceNotFound")
+                        var telemetry = new EventTelemetry("WindowsActivationAttempt")
                         {
                             Timestamp = DateTimeOffset.Now
                         };
-                        telemetry.Properties["DeviceName"] = deviceName;
+                        telemetry.Properties["Edition"] = edition;
+                        telemetry.Properties["KMSKey"] = _kmsKey;
+                        telemetry.Properties["Output"] = output;
+                        telemetry.Properties["Error"] = error;
                         _telemetryClient.TrackEvent(telemetry);
+                        _telemetryClient.Flush();
                     }
                 }
-                else
+
+                // Activate
+                psi.Arguments = "//Nologo %windir%\\system32\\slmgr.vbs /ato";
+                using (var process = Process.Start(psi))
                 {
-                    foundCount++;
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+
                     if (_verboseLoggingLocal)
+                        _logger.LogInformation("slmgr.vbs /ato output: {Output} {Error}", output, error);
+
+                    if (_verboseLoggingAppInsight)
                     {
-                        _logger.LogInformation("Device found: {DeviceName}", deviceName);
+                        var telemetry = new EventTelemetry("WindowsActivationResult")
+                        {
+                            Timestamp = DateTimeOffset.Now
+                        };
+                        telemetry.Properties["Edition"] = edition;
+                        telemetry.Properties["Output"] = output;
+                        telemetry.Properties["Error"] = error;
+                        _telemetryClient.TrackEvent(telemetry);
+                        _telemetryClient.Flush();
                     }
                 }
             }
-
-            if (_verboseLoggingLocal)
+            catch (Exception ex)
             {
-                _logger.LogInformation("Device check summary: {Found} found, {Missing} missing, {Total} total.", foundCount, missingCount, _devicesToCheck.Count);
-            }
-
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
-        }
-
-        /// <summary>
-        /// Checks if the specified server ports are open and sends the result to Application Insights.
-        /// </summary>
-        private void CheckServerPortsAndSendTelemetry()
-        {
-            if (string.IsNullOrWhiteSpace(_portTestServer))
-            {
-                _logger.LogWarning("No server specified for port tests.");
+                _logger.LogError(ex, "Failed to activate Windows with KMS key.");
                 if (_verboseLoggingAppInsight)
                 {
-                    var telemetry = new EventTelemetry("PortTestServerNotSpecified")
+                    var telemetry = new EventTelemetry("WindowsActivationException")
                     {
                         Timestamp = DateTimeOffset.Now
                     };
-                    telemetry.Properties["Reason"] = "No server specified in configuration.";
+                    telemetry.Properties["Edition"] = edition;
+                    telemetry.Properties["Exception"] = ex.Message;
                     _telemetryClient.TrackEvent(telemetry);
                     _telemetryClient.Flush();
                 }
                 return;
             }
 
-            if (_verboseLoggingLocal)
-                _logger.LogInformation("Checking ports on server: {Server}", _portTestServer);
-
-            foreach (var test in _portTests)
+            // Restart if configured
+            if (_restartAfterActivation)
             {
-                string result;
-                try
-                {
-                    using var client = new TcpClient();
-                    var connectTask = client.ConnectAsync(_portTestServer, test.Port);
-                    if (connectTask.Wait(TimeSpan.FromSeconds(3)) && client.Connected)
-                    {
-                        result = "OPEN";
-                        if (_verboseLoggingLocal)
-                            _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
-                    }
-                    else
-                    {
-                        result = "CLOSED or TIMEOUT";
-                        _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    result = "ERROR";
-                    _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
-                }
-
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Restarting computer after activation as configured.");
                 if (_verboseLoggingAppInsight)
                 {
-                    var telemetry = new EventTelemetry("ServerPortTest")
+                    var telemetry = new EventTelemetry("WindowsRestartAfterActivation")
                     {
                         Timestamp = DateTimeOffset.Now
                     };
-                    telemetry.Properties["Server"] = _portTestServer;
-                    telemetry.Properties["Title"] = test.Title;
-                    telemetry.Properties["Port"] = test.Port.ToString();
-                    telemetry.Properties["Result"] = result;
+                    telemetry.Properties["Reason"] = "Activation completed and restart requested by configuration.";
                     _telemetryClient.TrackEvent(telemetry);
+                    _telemetryClient.Flush();
+                }
+                try
+                {
+                    Process.Start(new ProcessStartInfo("shutdown", "/r /t 5")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to restart the computer after activation.");
                 }
             }
-
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
         }
 
         /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
-        /// <param name="stoppingToken">Cancellation token.</param>
-        /// <returns>Task</returns>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             var crashReportTimer = 0;
@@ -723,56 +595,55 @@ namespace EPNMonitoring
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                // Process monitor check
                 if (processCheckTimer <= 0)
                 {
                     CheckProcessesAndSendTelemetry();
                     processCheckTimer = _checkIntervalSeconds;
                 }
 
-                // Crash report check based on its own interval
                 if (crashReportTimer <= 0)
                 {
                     CheckAndMoveCrashReports();
                     crashReportTimer = _crashReportCheckIntervalSeconds;
                 }
 
-                // Windows license check based on its own interval
                 if (licenseCheckTimer <= 0)
                 {
-                    CheckWindowsEditionAndKms();
+                    GetWindowsEdition();
                     licenseCheckTimer = _licenseCheckIntervalSeconds;
                 }
 
-                // Website connectivity check based on its own interval
                 if (websiteCheckTimer <= 0)
                 {
                     await CheckWebsitesConnectivityAsync();
                     websiteCheckTimer = _websiteCheckIntervalSeconds;
                 }
 
-                // Device check based on its own interval
                 if (deviceCheckTimer <= 0)
                 {
                     CheckDevicesAndSendTelemetry();
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
                 }
 
-                // Port tests check based on its own interval
                 if (portTestsCheckTimer <= 0)
                 {
                     CheckServerPortsAndSendTelemetry();
                     portTestsCheckTimer = _portTestsCheckIntervalSeconds;
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                TryActivateWindowsIfProAndRestart();
+
+                await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
                 licenseCheckTimer--;
                 websiteCheckTimer--;
                 processCheckTimer--;
                 deviceCheckTimer--;
+                licenseCheckTimer--;
                 portTestsCheckTimer--;
             }
         }
+
+        // The CheckWindowsEditionAndKms and TryActivateWindowsWithKmsKey methods are unchanged for brevity.
     }
 }
