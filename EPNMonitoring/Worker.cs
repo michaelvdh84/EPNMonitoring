@@ -186,7 +186,7 @@ namespace EPNMonitoring
                 {
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("Process '{ProcessName}' is NOT running: {IsRunning}", exe, isRunning);
-                    _logger.LogWarning("Process '{ProcessName}' is NOT running!");
+                        _logger.LogWarning("Process '{ProcessName}' is NOT running!");
 
                     if (_verboseLoggingAppInsight)
                     {
