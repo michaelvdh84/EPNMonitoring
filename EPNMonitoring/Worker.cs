@@ -170,6 +170,28 @@ namespace EPNMonitoring
         }
 
         /// <summary>
+        /// Helper to track telemetry events respecting verbose logging settings.
+        /// Informational events are only sent when AppInsight verbose logging is enabled.
+        /// Warning and error events are always sent.
+        /// </summary>
+        private void TrackTelemetryEvent(string eventName, IDictionary<string, string?> properties, bool isInformational)
+        {
+            if (!isInformational || _verboseLoggingAppInsight)
+            {
+                var telemetry = new EventTelemetry(eventName)
+                {
+                    Timestamp = System.DateTimeOffset.Now
+                };
+                foreach (var kvp in properties)
+                {
+                    telemetry.Properties[kvp.Key] = kvp.Value ?? string.Empty;
+                }
+                _telemetryClient.TrackEvent(telemetry);
+                _telemetryClient.Flush();
+            }
+        }
+
+        /// <summary>
         /// Checks if the specified processes are running and sends the result to Application Insights.
         /// </summary>
         private void CheckProcessesAndSendTelemetry()
@@ -186,36 +208,32 @@ namespace EPNMonitoring
                 {
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("Process '{ProcessName}' is NOT running: {IsRunning}", exe, isRunning);
-                        _logger.LogWarning("Process '{ProcessName}' is NOT running!");
+                    _logger.LogWarning("Process '{ProcessName}' is NOT running!");
 
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("ProcessNotRunning")
+                    TrackTelemetryEvent(
+                        "ProcessNotRunning",
+                        new Dictionary<string, string?>
                         {
-                            Timestamp = System.DateTimeOffset.Now
-                        };
-                        telemetry.Properties["ProcessName"] = exe;
-                        telemetry.Properties["IsRunning"] = isRunning.ToString();
-                        _telemetryClient.TrackEvent(telemetry);
-                    }
+                            ["ProcessName"] = exe,
+                            ["IsRunning"] = isRunning.ToString()
+                        },
+                        isInformational: false);
                 }
-                else if (_verboseLoggingLocal)
+                else
                 {
-                    _logger.LogInformation("Process '{ProcessName}' is running.", exe);
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("ProcessRunning")
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("Process '{ProcessName}' is running.", exe);
+
+                    TrackTelemetryEvent(
+                        "ProcessRunning",
+                        new Dictionary<string, string?>
                         {
-                            Timestamp = System.DateTimeOffset.Now
-                        };
-                        telemetry.Properties["ProcessName"] = exe;
-                        telemetry.Properties["IsRunning"] = isRunning.ToString();
-                        _telemetryClient.TrackEvent(telemetry);
-                    }
+                            ["ProcessName"] = exe,
+                            ["IsRunning"] = isRunning.ToString()
+                        },
+                        isInformational: true);
                 }
             }
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
         }
 
         /// <summary>
@@ -227,12 +245,22 @@ namespace EPNMonitoring
             {
                 if (_verboseLoggingLocal)
                     _logger.LogWarning("Crash report folder does not exist: {FolderPath}", _crashReportFolder);
+
+                TrackTelemetryEvent(
+                    "CrashReportFolderMissing",
+                    new Dictionary<string, string?> { ["FolderPath"] = _crashReportFolder },
+                    isInformational: false);
                 return;
             }
             if (string.IsNullOrWhiteSpace(_crashReportDestinationFolder))
             {
                 if (_verboseLoggingLocal)
                     _logger.LogWarning("Crash report destination folder is not set.");
+
+                TrackTelemetryEvent(
+                    "CrashReportDestinationMissing",
+                    new Dictionary<string, string?>(),
+                    isInformational: false);
                 return;
             }
             if (!Directory.Exists(_crashReportDestinationFolder))
@@ -249,16 +277,14 @@ namespace EPNMonitoring
 
                 _logger.LogWarning("Crash report detected: {BaseName}, Created: {CreationTime}", group.Key, firstFile.CreationTime);
 
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("CrashReportDetected")
+                TrackTelemetryEvent(
+                    "CrashReportDetected",
+                    new Dictionary<string, string?>
                     {
-                        Timestamp = System.DateTimeOffset.Now
-                    };
-                    telemetry.Properties["BaseName"] = group.Key;
-                    telemetry.Properties["CreationTime"] = firstFile.CreationTime.ToString("o");
-                    _telemetryClient.TrackEvent(telemetry);
-                }
+                        ["BaseName"] = group.Key,
+                        ["CreationTime"] = firstFile.CreationTime.ToString("o")
+                    },
+                    isInformational: false);
 
                 foreach (var file in group)
                 {
@@ -276,8 +302,7 @@ namespace EPNMonitoring
                 }
             }
 
-            if (files.Length > 0 && _verboseLoggingAppInsight)
-                _telemetryClient.Flush();
+            // Flushing handled by TrackTelemetryEvent
         }
 
         /// <summary>
@@ -305,15 +330,10 @@ namespace EPNMonitoring
                 {
                     _logger.LogWarning("Device not found: {DeviceName}", deviceName);
                     missingCount++;
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("DeviceNotFound")
-                        {
-                            Timestamp = System.DateTimeOffset.Now
-                        };
-                        telemetry.Properties["DeviceName"] = deviceName;
-                        _telemetryClient.TrackEvent(telemetry);
-                    }
+                    TrackTelemetryEvent(
+                        "DeviceNotFound",
+                        new Dictionary<string, string?> { ["DeviceName"] = deviceName },
+                        isInformational: false);
                 }
                 else
                 {
@@ -326,8 +346,7 @@ namespace EPNMonitoring
             if (_verboseLoggingLocal)
                 _logger.LogInformation("Device check summary: {Found} found, {Missing} missing, {Total} total.", foundCount, missingCount, _devicesToCheck.Count);
 
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
+            // Flushing handled by TrackTelemetryEvent
         }
 
         /// <summary>
@@ -338,16 +357,10 @@ namespace EPNMonitoring
             if (string.IsNullOrWhiteSpace(_portTestServer))
             {
                 _logger.LogWarning("No server specified for port tests.");
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("PortTestServerNotSpecified")
-                    {
-                        Timestamp = System.DateTimeOffset.Now
-                    };
-                    telemetry.Properties["Reason"] = "No server specified in configuration.";
-                    _telemetryClient.TrackEvent(telemetry);
-                    _telemetryClient.Flush();
-                }
+                TrackTelemetryEvent(
+                    "PortTestServerNotSpecified",
+                    new Dictionary<string, string?> { ["Reason"] = "No server specified in configuration." },
+                    isInformational: false);
                 return;
             }
 
@@ -379,22 +392,20 @@ namespace EPNMonitoring
                     _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
 
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("ServerPortTest")
+                bool isInformational = result == "OPEN";
+                TrackTelemetryEvent(
+                    "ServerPortTest",
+                    new Dictionary<string, string?>
                     {
-                        Timestamp = System.DateTimeOffset.Now
-                    };
-                    telemetry.Properties["Server"] = _portTestServer;
-                    telemetry.Properties["Title"] = test.Title;
-                    telemetry.Properties["Port"] = test.Port.ToString();
-                    telemetry.Properties["Result"] = result;
-                    _telemetryClient.TrackEvent(telemetry);
-                }
+                        ["Server"] = _portTestServer,
+                        ["Title"] = test.Title,
+                        ["Port"] = test.Port.ToString(),
+                        ["Result"] = result
+                    },
+                    isInformational: isInformational);
             }
 
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
+            // Flushing handled by TrackTelemetryEvent
         }
 
         /// <summary>
@@ -415,19 +426,19 @@ namespace EPNMonitoring
                         _logger.LogWarning("Website unreachable (HTTP {StatusCode}): {Site}", (int)response.StatusCode, site);
                         SendWebsiteUnreachableTelemetry(site, $"HTTP {(int)response.StatusCode}");
                     }
-                    else if (_verboseLoggingLocal)
+                    else
                     {
-                        _logger.LogInformation("Website reachable: {Site}", site);
-                        if (_verboseLoggingAppInsight)
-                        {
-                            var telemetry = new EventTelemetry("WebsiteReachable")
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Website reachable: {Site}", site);
+
+                        TrackTelemetryEvent(
+                            "WebsiteReachable",
+                            new Dictionary<string, string?>
                             {
-                                Timestamp = System.DateTimeOffset.Now
-                            };
-                            telemetry.Properties["Site"] = site;
-                            telemetry.Properties["StatusCode"] = ((int)response.StatusCode).ToString();
-                            _telemetryClient.TrackEvent(telemetry);
-                        }
+                                ["Site"] = site,
+                                ["StatusCode"] = ((int)response.StatusCode).ToString()
+                            },
+                            isInformational: true);
                     }
                 }
                 catch (System.Exception ex)
@@ -436,8 +447,7 @@ namespace EPNMonitoring
                     SendWebsiteUnreachableTelemetry(site, ex.Message);
                 }
             }
-            if (_verboseLoggingAppInsight)
-                _telemetryClient.Flush();
+            // Flushing handled by TrackTelemetryEvent and SendWebsiteUnreachableTelemetry
         }
 
         /// <summary>
@@ -445,14 +455,14 @@ namespace EPNMonitoring
         /// </summary>
         private void SendWebsiteUnreachableTelemetry(string site, string reason)
         {
-            var telemetry = new EventTelemetry("WebsiteUnreachable")
-            {
-                Timestamp = System.DateTimeOffset.Now
-            };
-            telemetry.Properties["Site"] = site;
-            telemetry.Properties["Reason"] = reason;
-            _telemetryClient.TrackEvent(telemetry);
-            _telemetryClient.Flush();
+            TrackTelemetryEvent(
+                "WebsiteUnreachable",
+                new Dictionary<string, string?>
+                {
+                    ["Site"] = site,
+                    ["Reason"] = reason
+                },
+                isInformational: false);
         }
 
         /// <summary>
@@ -521,19 +531,16 @@ namespace EPNMonitoring
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("slmgr.vbs /ipk output: {Output} {Error}", output, error);
 
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("WindowsActivationAttempt")
+                    TrackTelemetryEvent(
+                        "WindowsActivationAttempt",
+                        new Dictionary<string, string?>
                         {
-                            Timestamp = DateTimeOffset.Now
-                        };
-                        telemetry.Properties["Edition"] = edition;
-                        telemetry.Properties["KMSKey"] = _kmsKey;
-                        telemetry.Properties["Output"] = output;
-                        telemetry.Properties["Error"] = error;
-                        _telemetryClient.TrackEvent(telemetry);
-                        _telemetryClient.Flush();
-                    }
+                            ["Edition"] = edition,
+                            ["KMSKey"] = _kmsKey,
+                            ["Output"] = output,
+                            ["Error"] = error
+                        },
+                        isInformational: true);
                 }
 
                 // Activate
@@ -547,34 +554,28 @@ namespace EPNMonitoring
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("slmgr.vbs /ato output: {Output} {Error}", output, error);
 
-                    if (_verboseLoggingAppInsight)
-                    {
-                        var telemetry = new EventTelemetry("WindowsActivationResult")
+                    TrackTelemetryEvent(
+                        "WindowsActivationResult",
+                        new Dictionary<string, string?>
                         {
-                            Timestamp = DateTimeOffset.Now
-                        };
-                        telemetry.Properties["Edition"] = edition;
-                        telemetry.Properties["Output"] = output;
-                        telemetry.Properties["Error"] = error;
-                        _telemetryClient.TrackEvent(telemetry);
-                        _telemetryClient.Flush();
-                    }
+                            ["Edition"] = edition,
+                            ["Output"] = output,
+                            ["Error"] = error
+                        },
+                        isInformational: true);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to activate Windows with KMS key.");
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("WindowsActivationException")
+                TrackTelemetryEvent(
+                    "WindowsActivationException",
+                    new Dictionary<string, string?>
                     {
-                        Timestamp = DateTimeOffset.Now
-                    };
-                    telemetry.Properties["Edition"] = edition;
-                    telemetry.Properties["Exception"] = ex.Message;
-                    _telemetryClient.TrackEvent(telemetry);
-                    _telemetryClient.Flush();
-                }
+                        ["Edition"] = edition,
+                        ["Exception"] = ex.Message
+                    },
+                    isInformational: false);
                 return;
             }
 
@@ -583,16 +584,13 @@ namespace EPNMonitoring
             {
                 if (_verboseLoggingLocal)
                     _logger.LogInformation("Restarting computer after activation as configured.");
-                if (_verboseLoggingAppInsight)
-                {
-                    var telemetry = new EventTelemetry("WindowsRestartAfterActivation")
+                TrackTelemetryEvent(
+                    "WindowsRestartAfterActivation",
+                    new Dictionary<string, string?>
                     {
-                        Timestamp = DateTimeOffset.Now
-                    };
-                    telemetry.Properties["Reason"] = "Activation completed and restart requested by configuration.";
-                    _telemetryClient.TrackEvent(telemetry);
-                    _telemetryClient.Flush();
-                }
+                        ["Reason"] = "Activation completed and restart requested by configuration."
+                    },
+                    isInformational: true);
                 try
                 {
                     Process.Start(new ProcessStartInfo("shutdown", "/r /t 5")
