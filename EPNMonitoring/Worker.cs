@@ -208,7 +208,7 @@ namespace EPNMonitoring
                 {
                     if (_verboseLoggingLocal)
                         _logger.LogInformation("Process '{ProcessName}' is NOT running: {IsRunning}", exe, isRunning);
-                    _logger.LogWarning("Process '{ProcessName}' is NOT running!");
+                    _logger.LogWarning("Process '{ProcessName}' is NOT running!", exe);
 
                     TrackTelemetryEvent(
                         "ProcessNotRunning",
@@ -379,11 +379,30 @@ namespace EPNMonitoring
                         result = "OPEN";
                         if (_verboseLoggingLocal)
                             _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
+                            TrackTelemetryEvent(
+                                "PortTestOpened",
+                                new Dictionary<string, string?> {
+                                    ["Title"] = test.Title,
+                                    ["Port"] = test.Port.ToString(),
+                                    ["Server"] = _portTestServer,
+                                    ["Result"] = result
+                                },
+                        isInformational: true);
                     }
                     else
                     {
                         result = "CLOSED or TIMEOUT";
                         _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
+                        TrackTelemetryEvent(
+                            "PortTestTimeoutOrClosed",
+                            new Dictionary<string, string?>
+                            {
+                                ["Title"] = test.Title,
+                                ["Port"] = test.Port.ToString(),
+                                ["Server"] = _portTestServer,
+                                ["Result"] = result
+                            },
+                            isInformational: false);
                     }
                 }
                 catch (System.Exception ex)
@@ -392,17 +411,17 @@ namespace EPNMonitoring
                     _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
 
-                bool isInformational = result == "OPEN";
-                TrackTelemetryEvent(
-                    "ServerPortTest",
-                    new Dictionary<string, string?>
-                    {
-                        ["Server"] = _portTestServer,
-                        ["Title"] = test.Title,
-                        ["Port"] = test.Port.ToString(),
-                        ["Result"] = result
-                    },
-                    isInformational: isInformational);
+                //bool isInformational = result == "OPEN";
+                //TrackTelemetryEvent(
+                //    "ServerPortTest",
+                //    new Dictionary<string, string?>
+                //    {
+                //        ["Server"] = _portTestServer,
+                //        ["Title"] = test.Title,
+                //        ["Port"] = test.Port.ToString(),
+                //        ["Result"] = result
+                //    },
+                //    isInformational: isInformational);
             }
 
             // Flushing handled by TrackTelemetryEvent
@@ -607,6 +626,34 @@ namespace EPNMonitoring
         }
 
         /// <summary>
+        /// Cleans the local log file if it exceeds the maximum size and autoclean is enabled.
+        /// </summary>
+        private void CleanLocalLogIfNeeded()
+        {
+            var logSection = _configuration.GetSection("LocalLog");
+            string logPath = logSection.GetValue<string>("FilePath");
+            long maxSize = logSection.GetValue<long>("MaxLogSize", 10485760); // Default 10 MB
+            bool autoclean = logSection.GetValue<bool>("Autoclean", false);
+
+            if (string.IsNullOrWhiteSpace(logPath) || !File.Exists(logPath) || !autoclean)
+                return;
+
+            var fileInfo = new FileInfo(logPath);
+            if (fileInfo.Length > maxSize)
+            {
+                try
+                {
+                    File.WriteAllText(logPath, string.Empty);
+                    _logger.LogWarning("Local log file exceeded {MaxLogSize} bytes and was cleaned.", maxSize);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to clean local log file: {LogPath}", logPath);
+                }
+            }
+        }
+
+        /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -617,6 +664,7 @@ namespace EPNMonitoring
             var processCheckTimer = _checkIntervalSeconds;
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
+            var cleanLocalLogTimer = 48200;
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -656,7 +704,20 @@ namespace EPNMonitoring
                     portTestsCheckTimer = _portTestsCheckIntervalSeconds;
                 }
 
-                TryActivateWindowsIfProAndRestart();
+                if (licenseCheckTimer <= 0)
+                {
+                    //CheckWindowsEditionAndKms();
+                    TryActivateWindowsIfProAndRestart();
+                    licenseCheckTimer = _licenseCheckIntervalSeconds;
+                }
+
+                if (cleanLocalLogTimer <= 0)
+                {
+                    CleanLocalLogIfNeeded();
+                    cleanLocalLogTimer = 3600;
+                }
+
+                //CleanLocalLogIfNeeded();
 
                 await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
