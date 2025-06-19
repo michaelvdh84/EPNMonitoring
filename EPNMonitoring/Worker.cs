@@ -664,7 +664,7 @@ namespace EPNMonitoring
             var processCheckTimer = _checkIntervalSeconds;
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
-            var cleanLocalLogTimer = 48200;
+            var cleanLocalLogTimer = 3600;
 
             while (!stoppingToken.IsCancellationRequested)
             {
