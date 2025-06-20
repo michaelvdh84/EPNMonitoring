@@ -147,6 +147,9 @@ Below is a description of each configuration section and its parameters:
     ]
   },
 ```
+- **CheckIntervalSeconds:** How often to scan the Windows Event Viewer.
+- **Applications:** List of application names to monitor for specific events (e.g., crashes).
+
 ---
 
 ### VerboseLogging
