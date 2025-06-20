@@ -37,7 +37,7 @@ Below is a description of each configuration section and its parameters:
 ### ApplicationInsights
 ```JSON 
 "ApplicationInsights": { 
-	"InstrumentationKey": "APP__INSIGHTS_CONNECTION__STRING", 
+    "InstrumentationKey": "APP__INSIGHTS_CONNECTION__STRING", 
     "EnableDebugLogger": false,
     "EnableAdaptiveSampling": true,
     "EnablePerformanceCounterCollectionModule": true,
@@ -209,8 +209,4 @@ Below is a description of each configuration section and its parameters:
 - Application Insights resource (for telemetry)
 
 ---
-
-## License
-
-This project is intended for internal use. See repository for license details.
 
