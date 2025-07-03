@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>dotnet-EPNMonitoring-0eb51dc8-0602-4fe7-a4d5-bcfdf469d10a</UserSecretsId>
     <OutputType>Exe</OutputType>
+	<Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
+	<AssemblyVersion>1.2.0.0</AssemblyVersion>
   </PropertyGroup>
 
   <ItemGroup>

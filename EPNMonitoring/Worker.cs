@@ -443,15 +443,16 @@ namespace EPNMonitoring
                         result = "OPEN";
                         if (_verboseLoggingLocal)
                             _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
-                            TrackTelemetryEvent(
-                                "PortTestOpened",
-                                new Dictionary<string, string?> {
-                                    ["Title"] = test.Title,
-                                    ["Port"] = test.Port.ToString(),
-                                    ["Server"] = _portTestServer,
-                                    ["Result"] = result
-                                },
-                        isInformational: true);
+                        TrackTelemetryEvent(
+                            "PortTestOpened",
+                            new Dictionary<string, string?>
+                            {
+                                ["Title"] = test.Title,
+                                ["Port"] = test.Port.ToString(),
+                                ["Server"] = _portTestServer,
+                                ["Result"] = result
+                            },
+                            isInformational: true);
                     }
                     else
                     {
@@ -474,21 +475,7 @@ namespace EPNMonitoring
                     result = "ERROR";
                     _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
-
-                //bool isInformational = result == "OPEN";
-                //TrackTelemetryEvent(
-                //    "ServerPortTest",
-                //    new Dictionary<string, string?>
-                //    {
-                //        ["Server"] = _portTestServer,
-                //        ["Title"] = test.Title,
-                //        ["Port"] = test.Port.ToString(),
-                //        ["Result"] = result
-                //    },
-                //    isInformational: isInformational);
             }
-
-            // Flushing handled by TrackTelemetryEvent
         }
 
         /// <summary>
@@ -530,7 +517,6 @@ namespace EPNMonitoring
                     SendWebsiteUnreachableTelemetry(site, ex.Message);
                 }
             }
-            // Flushing handled by TrackTelemetryEvent and SendWebsiteUnreachableTelemetry
         }
 
         /// <summary>
@@ -548,150 +534,6 @@ namespace EPNMonitoring
                 isInformational: false);
         }
 
-        /// <summary>
-        /// Gets the Windows edition from the registry.
-        /// </summary>
-        private string GetWindowsEdition()
-        {
-            try
-            {
-                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
-                return key?.GetValue("EditionID")?.ToString() ?? "Unknown";
-            }
-            catch
-            {
-                return "Unknown";
-            }
-        }
-
-        /// <summary>
-        /// Attempts to activate Windows if the edition is 'Pro' and restarts the computer if configured.
-        /// </summary>
-        private void TryActivateWindowsIfProAndRestart()
-        {
-            string edition = GetWindowsEdition();
-            if (!_enableActivation)
-            {
-                if (_verboseLoggingLocal)
-                    _logger.LogInformation("Windows activation is disabled by configuration.");
-                return;
-            }
-
-            if (!string.Equals(edition, "Pro", StringComparison.OrdinalIgnoreCase))
-            {
-                if (_verboseLoggingLocal)
-                    _logger.LogInformation("Windows edition is not 'Pro' (detected: {Edition}), skipping activation.", edition);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(_kmsKey))
-            {
-                _logger.LogWarning("No KMS key specified in configuration. Skipping activation attempt.");
-                return;
-            }
-
-            if (_verboseLoggingLocal)
-                _logger.LogInformation("Attempting Windows activation for 'Pro' edition with KMS key.");
-
-            // Run slmgr.vbs activation
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "cscript",
-                    Arguments = $"//Nologo %windir%\\system32\\slmgr.vbs /ipk {_kmsKey}",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using (var process = Process.Start(psi))
-                {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    process.WaitForExit();
-
-                    if (_verboseLoggingLocal)
-                        _logger.LogInformation("slmgr.vbs /ipk output: {Output} {Error}", output, error);
-
-                    TrackTelemetryEvent(
-                        "WindowsActivationAttempt",
-                        new Dictionary<string, string?>
-                        {
-                            ["Edition"] = edition,
-                            ["KMSKey"] = _kmsKey,
-                            ["Output"] = output,
-                            ["Error"] = error
-                        },
-                        isInformational: true);
-                }
-
-                // Activate
-                psi.Arguments = "//Nologo %windir%\\system32\\slmgr.vbs /ato";
-                using (var process = Process.Start(psi))
-                {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
-                    process.WaitForExit();
-
-                    if (_verboseLoggingLocal)
-                        _logger.LogInformation("slmgr.vbs /ato output: {Output} {Error}", output, error);
-
-                    TrackTelemetryEvent(
-                        "WindowsActivationResult",
-                        new Dictionary<string, string?>
-                        {
-                            ["Edition"] = edition,
-                            ["Output"] = output,
-                            ["Error"] = error
-                        },
-                        isInformational: true);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to activate Windows with KMS key.");
-                TrackTelemetryEvent(
-                    "WindowsActivationException",
-                    new Dictionary<string, string?>
-                    {
-                        ["Edition"] = edition,
-                        ["Exception"] = ex.Message
-                    },
-                    isInformational: false);
-                return;
-            }
-
-            // Restart if configured
-            if (_restartAfterActivation)
-            {
-                if (_verboseLoggingLocal)
-                    _logger.LogInformation("Restarting computer after activation as configured.");
-                TrackTelemetryEvent(
-                    "WindowsRestartAfterActivation",
-                    new Dictionary<string, string?>
-                    {
-                        ["Reason"] = "Activation completed and restart requested by configuration."
-                    },
-                    isInformational: true);
-                try
-                {
-                    Process.Start(new ProcessStartInfo("shutdown", "/r /t 5")
-                    {
-                        CreateNoWindow = true,
-                        UseShellExecute = false
-                    });
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to restart the computer after activation.");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Cleans the local log file if it exceeds the maximum size and autoclean is enabled.
-        /// </summary>
         private void CleanLocalLogIfNeeded()
         {
             var logSection = _configuration.GetSection("LocalLog");
@@ -714,6 +556,162 @@ namespace EPNMonitoring
                 {
                     _logger.LogError(ex, "Failed to clean local log file: {LogPath}", logPath);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Checks the current Windows Edition and attempts activation if it does not match the expected edition.
+        /// Respects EnableActivation, RestartAfterActivation, and verbose logging settings.
+        /// </summary>
+        private async Task CheckWindowsEditionAndKmsAsync(CancellationToken stoppingToken)
+        {
+            string currentEdition = GetWindowsEdition();
+            bool editionMatches = string.Equals(currentEdition, _expectedWindowsEdition, StringComparison.OrdinalIgnoreCase);
+
+            if (_verboseLoggingLocal)
+                _logger.LogInformation("Windows edition check: Current={CurrentEdition}, Expected={ExpectedEdition}, Match={Match}", currentEdition, _expectedWindowsEdition, editionMatches);
+
+            if (_verboseLoggingAppInsight)
+            {
+                TrackTelemetryEvent(
+                    "WindowsEditionCheck",
+                    new Dictionary<string, string?>
+                    {
+                        ["CurrentEdition"] = currentEdition,
+                        ["ExpectedEdition"] = _expectedWindowsEdition,
+                        ["Match"] = editionMatches.ToString()
+                    },
+                    isInformational: true);
+            }
+
+            if (!editionMatches)
+            {
+                _logger.LogWarning("Windows edition mismatch: Current={CurrentEdition}, Expected={ExpectedEdition}", currentEdition, _expectedWindowsEdition);
+                TrackTelemetryEvent(
+                    "WindowsEditionMismatch",
+                    new Dictionary<string, string?>
+                    {
+                        ["CurrentEdition"] = currentEdition,
+                        ["ExpectedEdition"] = _expectedWindowsEdition
+                    },
+                    isInformational: false);
+
+                if (_enableActivation && !string.IsNullOrWhiteSpace(_kmsKey))
+                {
+                    var activationResult = await TryActivateWindowsWithKmsKeyAsync(_kmsKey, stoppingToken);
+
+                    if (_verboseLoggingLocal || !activationResult.Success)
+                        _logger.LogInformation("Windows activation attempted. Success={Success}, Message={Message}", activationResult.Success, activationResult.Message);
+
+                    TrackTelemetryEvent(
+                        "WindowsActivationAttempt",
+                        new Dictionary<string, string?>
+                        {
+                            ["Success"] = activationResult.Success.ToString(),
+                            ["Message"] = activationResult.Message
+                        },
+                        isInformational: !activationResult.Success ? false : _verboseLoggingAppInsight);
+
+                    if (activationResult.Success && _restartAfterActivation)
+                    {
+                        _logger.LogWarning("Restarting system after successful activation as per configuration.");
+                        TrackTelemetryEvent(
+                            "WindowsRestartAfterActivation",
+                            new Dictionary<string, string?>(),
+                            isInformational: false);
+
+                        // Initiate restart
+                        Process.Start(new ProcessStartInfo("shutdown", "/r /t 5")
+                        {
+                            CreateNoWindow = true,
+                            UseShellExecute = false
+                        });
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets the current Windows Edition using WMI.
+        /// </summary>
+        private string GetWindowsEdition()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Caption FROM Win32_OperatingSystem");
+                foreach (var os in searcher.Get())
+                {
+                    var caption = os["Caption"]?.ToString() ?? string.Empty;
+                    // Example: "Microsoft Windows 10 Enterprise"
+                    var parts = caption.Split(' ');
+                    if (parts.Length >= 1)
+                        return parts.Last(); // "Enterprise", "Pro", etc.
+                    return caption;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows edition.");
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Attempts to activate Windows using the provided KMS key.
+        /// </summary>
+        private async Task<(bool Success, string Message)> TryActivateWindowsWithKmsKeyAsync(string kmsKey, CancellationToken stoppingToken)
+        {
+            try
+            {
+                // Set KMS key
+                var setKey = await RunProcessAsync("cscript.exe", $"//Nologo slmgr.vbs /ipk {kmsKey}", stoppingToken);
+                if (!setKey.Success)
+                    return (false, $"Failed to set KMS key: {setKey.Message}");
+
+                // Activate Windows
+                var activate = await RunProcessAsync("cscript.exe", "//Nologo slmgr.vbs /ato", stoppingToken);
+                if (!activate.Success)
+                    return (false, $"Activation failed: {activate.Message}");
+
+                return (true, "Activation succeeded.");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Exception during activation: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Runs a process and returns the result.
+        /// </summary>
+        private async Task<(bool Success, string Message)> RunProcessAsync(string fileName, string arguments, CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = fileName,
+                        Arguments = arguments,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+                process.Start();
+                string output = await process.StandardOutput.ReadToEndAsync();
+                string error = await process.StandardError.ReadToEndAsync();
+                await process.WaitForExitAsync(stoppingToken);
+
+                bool success = process.ExitCode == 0;
+                string message = !string.IsNullOrWhiteSpace(error) ? error : output;
+                return (success, message.Trim());
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Process error: {ex.Message}");
             }
         }
 
@@ -747,7 +745,7 @@ namespace EPNMonitoring
 
                 if (licenseCheckTimer <= 0)
                 {
-                    GetWindowsEdition();
+                    await CheckWindowsEditionAndKmsAsync(stoppingToken);
                     licenseCheckTimer = _licenseCheckIntervalSeconds;
                 }
 
@@ -775,20 +773,11 @@ namespace EPNMonitoring
                     eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
                 }
 
-                if (licenseCheckTimer <= 0)
-                {
-                    //CheckWindowsEditionAndKms();
-                    TryActivateWindowsIfProAndRestart();
-                    licenseCheckTimer = _licenseCheckIntervalSeconds;
-                }
-
                 if (cleanLocalLogTimer <= 0)
                 {
                     CleanLocalLogIfNeeded();
                     cleanLocalLogTimer = 3600;
                 }
-
-                //CleanLocalLogIfNeeded();
 
                 await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
@@ -796,12 +785,10 @@ namespace EPNMonitoring
                 websiteCheckTimer--;
                 processCheckTimer--;
                 deviceCheckTimer--;
-                licenseCheckTimer--;
                 portTestsCheckTimer--;
                 eventViewerCheckTimer--;
+                cleanLocalLogTimer--;
             }
         }
-
-        // The CheckWindowsEditionAndKms and TryActivateWindowsWithKmsKey methods are unchanged for brevity.
     }
 }
