@@ -63,6 +63,13 @@ namespace EPNMonitoring
         private readonly bool _verboseLoggingLocal;
         private readonly bool _verboseLoggingAppInsight;
 
+        // Kiosk user
+        private readonly string _kioskUser;
+
+        // Kiosk user check interval and list
+        private readonly int _kioskUserCheckIntervalSeconds;
+        private readonly List<string> _kioskUsers;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -115,6 +122,14 @@ namespace EPNMonitoring
             // Ensure _verboseLoggingLocal is always set from config
             _verboseLoggingLocal = _configuration.GetValue<bool>("VerboseLogging:Local", false);
             _verboseLoggingAppInsight = _configuration.GetValue<bool>("VerboseLogging:AppInsight", false);
+
+            // Kiosk user config
+            _kioskUser = _configuration.GetValue<string>("KioskUser");
+
+            // Kiosk user check interval and list config
+            var kioskUserSection = _configuration.GetSection("KioskUser");
+            _kioskUserCheckIntervalSeconds = kioskUserSection.GetValue<int>("CheckIntervalSeconds", 60);
+            _kioskUsers = kioskUserSection.GetSection("Users").Get<List<string>>() ?? new List<string>();
 
             // Log the current verbose logging settings for diagnostics
             if (_verboseLoggingLocal)
@@ -716,6 +731,68 @@ namespace EPNMonitoring
         }
 
         /// <summary>
+        /// Gets the currently active user.
+        /// </summary>
+        private string GetActiveUser()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_ComputerSystem");
+                foreach (var obj in searcher.Get())
+                {
+                    var user = obj["UserName"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(user))
+                        return user;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get active user.");
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Checks and logs the active user status.
+        /// </summary>
+        private void CheckAndLogActiveUser()
+        {
+            var activeUser = GetActiveUser();
+            if (_kioskUsers == null || _kioskUsers.Count == 0)
+            {
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("KioskUser list not configured. Skipping active user check.");
+                return;
+            }
+
+            bool match = _kioskUsers.Any(u => string.Equals(activeUser, u, StringComparison.OrdinalIgnoreCase));
+            if (match)
+            {
+                _logger.LogInformation("Kiosk user '{ActiveUser}' is currently active.", activeUser);
+                TrackTelemetryEvent(
+                    "KioskUserActive",
+                    new Dictionary<string, string?>
+                    {
+                        ["ActiveUser"] = activeUser,
+                        ["KioskUsers"] = string.Join(";", _kioskUsers)
+                    },
+                    isInformational: true);
+            }
+            else
+            {
+                _logger.LogWarning("Active user '{ActiveUser}' does not match any KioskUser.", activeUser);
+                TrackTelemetryEvent(
+                    "KioskUserMismatch",
+                    new Dictionary<string, string?>
+                    {
+                        ["ActiveUser"] = activeUser,
+                        ["KioskUsers"] = string.Join(";", _kioskUsers)
+                    },
+                    isInformational: false);
+            }
+        }
+
+        /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -728,6 +805,8 @@ namespace EPNMonitoring
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
             var eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
             var cleanLocalLogTimer = 3600;
+            var activeUserCheckTimer = 60;
+            var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -779,6 +858,18 @@ namespace EPNMonitoring
                     cleanLocalLogTimer = 3600;
                 }
 
+                if (activeUserCheckTimer <= 0)
+                {
+                    CheckAndLogActiveUser();
+                    activeUserCheckTimer = 60;
+                }
+
+                if (kioskUserCheckTimer <= 0)
+                {
+                    CheckAndLogActiveUser();
+                    kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
+                }
+
                 await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
                 licenseCheckTimer--;
@@ -788,6 +879,8 @@ namespace EPNMonitoring
                 portTestsCheckTimer--;
                 eventViewerCheckTimer--;
                 cleanLocalLogTimer--;
+                activeUserCheckTimer--;
+                kioskUserCheckTimer--;
             }
         }
     }
