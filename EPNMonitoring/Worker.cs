@@ -1020,6 +1020,12 @@ namespace EPNMonitoring
         /// </summary>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // Log Windows version and edition once at startup
+            LogWindowsVersionAndEdition();
+
+            // Log latest Windows updates at startup
+            LogLatestWindowsUpdates();
+
             var crashReportTimer = 0;
             var licenseCheckTimer = _licenseCheckIntervalSeconds;
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
@@ -1118,6 +1124,183 @@ namespace EPNMonitoring
                 kioskUserCheckTimer--;
                 defaultPrinterCheckTimer--;
             }
+        }
+
+        /// <summary>
+        /// Checks and logs the Windows version and edition at startup.
+        /// </summary>
+        private void LogWindowsVersionAndEdition()
+        {
+            string fullVersion = GetFullWindowsVersionString();
+
+            // Local log
+            _logger.LogInformation("{FullVersion}", fullVersion);
+
+            // App Insights
+            TrackTelemetryEvent(
+                "WindowsStartupVersionEdition",
+                new Dictionary<string, string?>
+                {
+                    ["FullVersion"] = fullVersion
+                },
+                isInformational: false);
+        }
+
+        /// <summary>
+        /// Gets the current Windows version using WMI.
+        /// </summary>
+        private string GetWindowsVersion()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Version FROM Win32_OperatingSystem");
+                foreach (var os in searcher.Get())
+                {
+                    return os["Version"]?.ToString() ?? string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows version.");
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Gets the full Windows version string, e.g., "Windows 11 Enterprise 24H2".
+        /// </summary>
+        private string GetFullWindowsVersionString()
+        {
+            string caption = "";
+            string edition = "";
+            string displayVersion = "";
+
+            // Get Caption (e.g., "Microsoft Windows 11 Enterprise")
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Caption FROM Win32_OperatingSystem");
+                foreach (var os in searcher.Get())
+                {
+                    caption = os["Caption"]?.ToString() ?? "";
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows caption.");
+            }
+
+            // Extract Edition (last word of caption)
+            if (!string.IsNullOrWhiteSpace(caption))
+            {
+                var parts = caption.Split(' ');
+                if (parts.Length >= 2)
+                {
+                    edition = parts.Last(); // "Enterprise", "Pro", etc.
+                }
+            }
+
+            // Get DisplayVersion (e.g., "24H2") from registry
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+                displayVersion = key?.GetValue("DisplayVersion")?.ToString() ?? key?.GetValue("ReleaseId")?.ToString() ?? "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows display version.");
+            }
+
+            // Compose string: "Windows 11 Enterprise 24H2"
+            string result = caption;
+            if (!string.IsNullOrWhiteSpace(displayVersion))
+            {
+                result += " " + displayVersion;
+            }
+            return result.Trim();
+        }
+
+        /// <summary>
+        /// Gets the latest installed Windows updates (last 5), with robust date parsing.
+        /// </summary>
+        private List<(string KBArticle, string Title, string InstalledOn)> GetLatestInstalledUpdates()
+        {
+            var updates = new List<(string KBArticle, string Title, string InstalledOn)>();
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT HotFixID, Description, InstalledOn FROM Win32_QuickFixEngineering");
+                foreach (ManagementObject update in searcher.Get())
+                {
+                    string kb = update["HotFixID"]?.ToString() ?? "";
+                    string title = update["Description"]?.ToString() ?? "";
+                    string installedOnStr = update["InstalledOn"]?.ToString() ?? "";
+
+                    // Try to parse date, fallback to raw string or "Unknown"
+                    string installedOnDisplay = "Unknown";
+                    if (!string.IsNullOrWhiteSpace(installedOnStr))
+                    {
+                        DateTime dt;
+                        if (DateTime.TryParse(installedOnStr, out dt) && dt.Year > 2000)
+                        {
+                            installedOnDisplay = dt.ToString("yyyy-MM-dd");
+                        }
+                        else
+                        {
+                            installedOnDisplay = installedOnStr;
+                        }
+                    }
+
+                    updates.Add((kb, title, installedOnDisplay));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get installed updates.");
+            }
+            // Order by date descending if possible, else by KB
+            return updates
+                .OrderByDescending(u => u.InstalledOn)
+                .Take(5)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Checks the latest installed Windows updates and logs them to App Insights and an external file.
+        /// </summary>
+        private void LogLatestWindowsUpdates()
+        {
+            var updateLogPath = _configuration.GetValue<string>("UpdateLog:FilePath") ?? "windows-updates.log";
+            var updates = GetLatestInstalledUpdates();
+
+            // Format for logging
+            string updateSummary = string.Join(Environment.NewLine, updates.Select(u =>
+                $"KB: {u.KBArticle}, {u.Title}, Installed: {u.InstalledOn}"));
+
+            // Local log file
+            try
+            {
+                var logDir = Path.GetDirectoryName(updateLogPath);
+                if (!string.IsNullOrWhiteSpace(logDir) && !Directory.Exists(logDir))
+                    Directory.CreateDirectory(logDir);
+
+                File.WriteAllText(updateLogPath, updateSummary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to write update log file: {Path}", updateLogPath);
+            }
+
+            // ILogger
+            _logger.LogInformation("Latest Windows updates:\n{UpdateSummary}", updateSummary);
+
+            // App Insights
+            TrackTelemetryEvent(
+                "WindowsLatestUpdates",
+                new Dictionary<string, string?>
+                {
+                    ["UpdateSummary"] = updateSummary
+                },
+                isInformational: false);
         }
     }
 }
