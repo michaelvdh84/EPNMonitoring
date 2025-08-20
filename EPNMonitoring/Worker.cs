@@ -51,7 +51,7 @@ namespace EPNMonitoring
 
         // Port tests monitor
         private readonly string _portTestServer;
-        private readonly List<PortTestConfig> _portTests;
+        private readonly List<PortTestServerConfig> _portTestServers;
         private readonly int _portTestsCheckIntervalSeconds;
 
         // Event viewer monitor
@@ -69,6 +69,22 @@ namespace EPNMonitoring
         // Kiosk user check interval and list
         private readonly int _kioskUserCheckIntervalSeconds;
         private readonly List<string> _kioskUsers;
+
+        private readonly bool _processMonitorEnabled;
+        private readonly bool _crashReportMonitorEnabled;
+        private readonly bool _windowsLicenseMonitorEnabled;
+        private readonly bool _localLogEnabled;
+        private readonly bool _websiteMonitorEnabled;
+        private readonly bool _eventViewerMonitorEnabled;
+        private readonly bool _deviceMonitorEnabled;
+        private readonly bool _portTestsMonitorEnabled;
+        private readonly bool _kioskUserEnabled;
+
+        // Default printer settings
+        private readonly bool _defaultPrinterEnabled;
+        private readonly string _defaultPrinterName;
+        private readonly int _defaultPrinterCheckIntervalSeconds;
+        private readonly bool _defaultPrinterForceDefault;
 
         public Worker(
             ILogger<Worker> logger,
@@ -108,8 +124,7 @@ namespace EPNMonitoring
 
             // Port tests monitor config
             var portTestsMonitorSection = _configuration.GetSection("PortTestsMonitor");
-            _portTestServer = portTestsMonitorSection.GetValue<string>("LogonServer");
-            _portTests = portTestsMonitorSection.GetSection("PortTests").Get<List<PortTestConfig>>() ?? new List<PortTestConfig>();
+            _portTestServers = portTestsMonitorSection.GetSection("Servers").Get<List<PortTestServerConfig>>() ?? new List<PortTestServerConfig>();
             _portTestsCheckIntervalSeconds = portTestsMonitorSection.GetValue<int>("CheckIntervalSeconds", 60);
 
             // Event viewer monitor config
@@ -138,6 +153,23 @@ namespace EPNMonitoring
                 _logger.LogInformation("Verbose local logging is DISABLED by configuration.");
 
             EnableApplicationInsightsDiagnostics();
+
+            _processMonitorEnabled = _configuration.GetValue<bool>("ProcessMonitor:Enabled", true);
+            _crashReportMonitorEnabled = _configuration.GetValue<bool>("CrashReportMonitor:Enabled", true);
+            _windowsLicenseMonitorEnabled = _configuration.GetValue<bool>("WindowsLicenseMonitor:Enabled", true);
+            _localLogEnabled = _configuration.GetValue<bool>("LocalLog:Enabled", true);
+            _websiteMonitorEnabled = _configuration.GetValue<bool>("WebsiteMonitor:Enabled", true);
+            _eventViewerMonitorEnabled = _configuration.GetValue<bool>("EventViewerMonitor:Enabled", true);
+            _deviceMonitorEnabled = _configuration.GetValue<bool>("DeviceMonitor:Enabled", true);
+            _portTestsMonitorEnabled = _configuration.GetValue<bool>("PortTestsMonitor:Enabled", true);
+            _kioskUserEnabled = _configuration.GetValue<bool>("KioskUser:Enabled", true);
+
+            // Default printer settings
+            var defaultPrinterSection = _configuration.GetSection("DefaultPrinter");
+            _defaultPrinterEnabled = defaultPrinterSection.GetValue<bool>("Enabled", true);
+            _defaultPrinterName = defaultPrinterSection.GetValue<string>("Name", "");
+            _defaultPrinterCheckIntervalSeconds = defaultPrinterSection.GetValue<int>("CheckIntervalSeconds", 60);
+            _defaultPrinterForceDefault = defaultPrinterSection.GetValue<bool>("ForceDefault", false);
         }
 
         /// <summary>
@@ -433,62 +465,73 @@ namespace EPNMonitoring
         /// </summary>
         private void CheckServerPortsAndSendTelemetry()
         {
-            if (string.IsNullOrWhiteSpace(_portTestServer))
+            if (_portTestServers == null || _portTestServers.Count == 0)
             {
-                _logger.LogWarning("No server specified for port tests.");
+                _logger.LogWarning("No servers specified for port tests.");
                 TrackTelemetryEvent(
-                    "PortTestServerNotSpecified",
-                    new Dictionary<string, string?> { ["Reason"] = "No server specified in configuration." },
+                    "PortTestServersNotSpecified",
+                    new Dictionary<string, string?> { ["Reason"] = "No servers specified in configuration." },
                     isInformational: false);
                 return;
             }
 
-            if (_verboseLoggingLocal)
-                _logger.LogInformation("Checking ports on server: {Server}", _portTestServer);
-
-            foreach (var test in _portTests)
+            foreach (var server in _portTestServers)
             {
-                string result;
-                try
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Checking ports on server: {Server}", server.Name);
+
+                foreach (var port in server.Ports)
                 {
-                    using var client = new TcpClient();
-                    var connectTask = client.ConnectAsync(_portTestServer, test.Port);
-                    if (connectTask.Wait(System.TimeSpan.FromSeconds(3)) && client.Connected)
+                    string result;
+                    try
                     {
-                        result = "OPEN";
-                        if (_verboseLoggingLocal)
-                            _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
-                        TrackTelemetryEvent(
-                            "PortTestOpened",
-                            new Dictionary<string, string?>
-                            {
-                                ["Title"] = test.Title,
-                                ["Port"] = test.Port.ToString(),
-                                ["Server"] = _portTestServer,
-                                ["Result"] = result
-                            },
-                            isInformational: true);
+                        using var client = new TcpClient();
+                        var connectTask = client.ConnectAsync(server.Name, port);
+                        if (connectTask.Wait(TimeSpan.FromSeconds(3)) && client.Connected)
+                        {
+                            result = "OPEN";
+                            if (_verboseLoggingLocal)
+                                _logger.LogInformation("Port {Port} on {Server}: OPEN", port, server.Name);
+                            TrackTelemetryEvent(
+                                "PortTestOpened",
+                                new Dictionary<string, string?>
+                                {
+                                    ["Port"] = port.ToString(),
+                                    ["Server"] = server.Name,
+                                    ["Result"] = result
+                                },
+                                isInformational: true);
+                        }
+                        else
+                        {
+                            result = "CLOSED or TIMEOUT";
+                            _logger.LogWarning("Port {Port} on {Server}: CLOSED or TIMEOUT", port, server.Name);
+                            TrackTelemetryEvent(
+                                "PortTestTimeoutOrClosed",
+                                new Dictionary<string, string?>
+                                {
+                                    ["Port"] = port.ToString(),
+                                    ["Server"] = server.Name,
+                                    ["Result"] = result
+                                },
+                                isInformational: false);
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        result = "CLOSED or TIMEOUT";
-                        _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
+                        result = "ERROR";
+                        _logger.LogError(ex, "Port {Port} on {Server}: ERROR", port, server.Name);
                         TrackTelemetryEvent(
-                            "PortTestTimeoutOrClosed",
+                            "PortTestError",
                             new Dictionary<string, string?>
                             {
-                                ["Title"] = test.Title,
-                                ["Port"] = test.Port.ToString(),
-                                ["Server"] = _portTestServer,
-                                ["Result"] = result
+                                ["Port"] = port.ToString(),
+                                ["Server"] = server.Name,
+                                ["Result"] = result,
+                                ["Error"] = ex.Message
                             },
                             isInformational: false);
                     }
-                }
-                catch (System.Exception ex)
-                {
-                    result = "ERROR";
-                    _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
             }
         }
@@ -605,6 +648,7 @@ namespace EPNMonitoring
                 TrackTelemetryEvent(
                     "WindowsEditionMismatch",
                     new Dictionary<string, string?>
+
                     {
                         ["CurrentEdition"] = currentEdition,
                         ["ExpectedEdition"] = _expectedWindowsEdition
@@ -793,10 +837,195 @@ namespace EPNMonitoring
         }
 
         /// <summary>
+        /// Checks the default printer configuration and status.
+        /// </summary>
+        private void CheckDefaultPrinter()
+        {
+            if (string.IsNullOrWhiteSpace(_defaultPrinterName))
+            {
+                if (_verboseLoggingLocal)
+                    _logger.LogWarning("DefaultPrinter name not configured.");
+                TrackTelemetryEvent(
+                    "DefaultPrinterConfigMissing",
+                    new Dictionary<string, string?> { ["ConfiguredName"] = _defaultPrinterName },
+                    isInformational: false);
+                return;
+            }
+
+            string defaultPrinter = string.Empty;
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Windows"))
+                {
+                    defaultPrinter = key?.GetValue("Device")?.ToString() ?? "";
+                    // Format: "Brother HL6300 series USB,winspool,Ne01:"
+                    if (!string.IsNullOrWhiteSpace(defaultPrinter))
+                    {
+                        int commaIndex = defaultPrinter.IndexOf(',');
+                        if (commaIndex > 0)
+                            defaultPrinter = defaultPrinter.Substring(0, commaIndex);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get default printer.");
+                TrackTelemetryEvent(
+                    "DefaultPrinterReadError",
+                    new Dictionary<string, string?> { ["Error"] = ex.Message },
+                    isInformational: false);
+                return;
+            }
+
+            // Find candidate printer (wildcard)
+            string candidatePrinter = null;
+            var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Printer");
+            foreach (ManagementObject printer in searcher.Get())
+            {
+                var name = printer["Name"]?.ToString() ?? "";
+                if (name.Contains(_defaultPrinterName, StringComparison.OrdinalIgnoreCase))
+                {
+                    candidatePrinter = name;
+                    break; // Only first match
+                }
+            }
+
+            bool match = !string.IsNullOrWhiteSpace(defaultPrinter) &&
+                         candidatePrinter != null &&
+                         string.Equals(defaultPrinter, candidatePrinter, StringComparison.OrdinalIgnoreCase);
+
+            if (_defaultPrinterForceDefault && candidatePrinter != null && !match)
+            {
+                try
+                {
+                    var setDefaultProcess = new Process
+                    {
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = "RUNDLL32.EXE",
+                            Arguments = $"PRINTUI.DLL,PrintUIEntry /y /n \"{candidatePrinter}\"",
+                            CreateNoWindow = true,
+                            UseShellExecute = false
+                        }
+                    };
+                    setDefaultProcess.Start();
+                    setDefaultProcess.WaitForExit(5000);
+
+                    _logger.LogInformation("Default printer set to '{Printer}' by force.", candidatePrinter);
+                    TrackTelemetryEvent(
+                        "DefaultPrinterForced",
+                        new Dictionary<string, string?>
+                        {
+                            ["Printer"] = candidatePrinter,
+                            ["ConfiguredName"] = _defaultPrinterName
+                        },
+                        isInformational: false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to set default printer '{Printer}'.", candidatePrinter);
+                    TrackTelemetryEvent(
+                        "DefaultPrinterForceError",
+                        new Dictionary<string, string?>
+                        {
+                            ["Printer"] = candidatePrinter,
+                            ["ConfiguredName"] = _defaultPrinterName,
+                            ["Error"] = ex.Message
+                        },
+                        isInformational: false);
+                }
+            }
+            else
+            {
+                if (match)
+                {
+                    if (_verboseLoggingLocal)
+                        _logger.LogInformation("Default printer '{DefaultPrinter}' matches '{ConfiguredName}'.", defaultPrinter, _defaultPrinterName);
+                    TrackTelemetryEvent(
+                        "DefaultPrinterMatch",
+                        new Dictionary<string, string?>
+                        {
+                            ["DefaultPrinter"] = defaultPrinter,
+                            ["ConfiguredName"] = _defaultPrinterName
+                        },
+                        isInformational: true);
+                }
+                else
+                {
+                    _logger.LogWarning("Default printer '{DefaultPrinter}' does NOT match '{ConfiguredName}'.", defaultPrinter, _defaultPrinterName);
+                    TrackTelemetryEvent(
+                        "DefaultPrinterMismatch",
+                        new Dictionary<string, string?>
+                        {
+                            ["DefaultPrinter"] = defaultPrinter,
+                            ["ConfiguredName"] = _defaultPrinterName
+                        },
+                        isInformational: false);
+                }
+            }
+
+            CheckDefaultPrinterOnline();
+        }
+
+        private void CheckDefaultPrinterOnline()
+        {
+            if (string.IsNullOrWhiteSpace(_defaultPrinterName))
+                return;
+
+            var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_Printer");
+            foreach (ManagementObject printer in searcher.Get())
+            {
+                var name = printer["Name"]?.ToString() ?? "";
+                if (name.Contains(_defaultPrinterName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Use PrinterStatus for more reliable online/offline detection
+                    int status = printer["PrinterStatus"] is int s ? s : 0;
+                    // 3 = Ready, 4 = Offline, 5 = Paused, 1 = Other
+                    bool isOnline = status == 3;
+
+                    if (isOnline)
+                    {
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Printer '{Printer}' is ONLINE (PrinterStatus={Status}).", name, status);
+                        TrackTelemetryEvent(
+                            "DefaultPrinterOnline",
+                            new Dictionary<string, string?>
+                            {
+                                ["Printer"] = name,
+                                ["ConfiguredName"] = _defaultPrinterName,
+                                ["PrinterStatus"] = status.ToString()
+                            },
+                            isInformational: true);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Printer '{Printer}' is OFFLINE (PrinterStatus={Status}).", name, status);
+                        TrackTelemetryEvent(
+                            "DefaultPrinterOffline",
+                            new Dictionary<string, string?>
+                            {
+                                ["Printer"] = name,
+                                ["ConfiguredName"] = _defaultPrinterName,
+                                ["PrinterStatus"] = status.ToString()
+                            },
+                            isInformational: false);
+                    }
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
         /// Main execution loop for the background service.
         /// </summary>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // Log Windows version and edition once at startup
+            LogWindowsVersionAndEdition();
+
+            // Log latest Windows updates at startup
+            LogLatestWindowsUpdates();
+
             var crashReportTimer = 0;
             var licenseCheckTimer = _licenseCheckIntervalSeconds;
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
@@ -807,67 +1036,79 @@ namespace EPNMonitoring
             var cleanLocalLogTimer = 3600;
             var activeUserCheckTimer = 60;
             var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
+            var defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
 
-            while (!stoppingToken.IsCancellationRequested)
+            if (_defaultPrinterEnabled)
             {
-                if (processCheckTimer <= 0)
+                CheckDefaultPrinter();
+            }
+
+                while (!stoppingToken.IsCancellationRequested)
+            {
+                if (processCheckTimer <= 0 && _processMonitorEnabled)
                 {
                     CheckProcessesAndSendTelemetry();
                     processCheckTimer = _checkIntervalSeconds;
                 }
 
-                if (crashReportTimer <= 0)
+                if (crashReportTimer <= 0 && _crashReportMonitorEnabled)
                 {
                     CheckAndMoveCrashReports();
                     crashReportTimer = _crashReportCheckIntervalSeconds;
                 }
 
-                if (licenseCheckTimer <= 0)
+                if (licenseCheckTimer <= 0 && _windowsLicenseMonitorEnabled)
                 {
                     await CheckWindowsEditionAndKmsAsync(stoppingToken);
                     licenseCheckTimer = _licenseCheckIntervalSeconds;
                 }
 
-                if (websiteCheckTimer <= 0)
+                if (websiteCheckTimer <= 0 && _websiteMonitorEnabled)
                 {
                     await CheckWebsitesConnectivityAsync();
                     websiteCheckTimer = _websiteCheckIntervalSeconds;
                 }
 
-                if (deviceCheckTimer <= 0)
+                if (deviceCheckTimer <= 0 && _deviceMonitorEnabled)
                 {
                     CheckDevicesAndSendTelemetry();
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
                 }
 
-                if (portTestsCheckTimer <= 0)
+                if (portTestsCheckTimer <= 0 && _portTestsMonitorEnabled)
                 {
                     CheckServerPortsAndSendTelemetry();
                     portTestsCheckTimer = _portTestsCheckIntervalSeconds;
                 }
 
-                if (eventViewerCheckTimer <= 0)
+                if (eventViewerCheckTimer <= 0 && _eventViewerMonitorEnabled)
                 {
                     CheckEventViewerForApplicationErrors();
                     eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
                 }
 
-                if (cleanLocalLogTimer <= 0)
+                if (cleanLocalLogTimer <= 0 && _localLogEnabled)
                 {
                     CleanLocalLogIfNeeded();
                     cleanLocalLogTimer = 3600;
                 }
 
-                if (activeUserCheckTimer <= 0)
+                if (activeUserCheckTimer <= 0 && _kioskUserEnabled)
                 {
                     CheckAndLogActiveUser();
                     activeUserCheckTimer = 60;
                 }
 
-                if (kioskUserCheckTimer <= 0)
+                if (kioskUserCheckTimer <= 0 && _kioskUserEnabled)
                 {
                     CheckAndLogActiveUser();
                     kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
+                }
+
+                if (defaultPrinterCheckTimer <= 0 && _defaultPrinterEnabled)
+                {
+                    CheckDefaultPrinterOnline();
+                    defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
                 }
 
                 await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
@@ -881,7 +1122,185 @@ namespace EPNMonitoring
                 cleanLocalLogTimer--;
                 activeUserCheckTimer--;
                 kioskUserCheckTimer--;
+                defaultPrinterCheckTimer--;
             }
+        }
+
+        /// <summary>
+        /// Checks and logs the Windows version and edition at startup.
+        /// </summary>
+        private void LogWindowsVersionAndEdition()
+        {
+            string fullVersion = GetFullWindowsVersionString();
+
+            // Local log
+            _logger.LogInformation("{FullVersion}", fullVersion);
+
+            // App Insights
+            TrackTelemetryEvent(
+                "WindowsStartupVersionEdition",
+                new Dictionary<string, string?>
+                {
+                    ["FullVersion"] = fullVersion
+                },
+                isInformational: false);
+        }
+
+        /// <summary>
+        /// Gets the current Windows version using WMI.
+        /// </summary>
+        private string GetWindowsVersion()
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Version FROM Win32_OperatingSystem");
+                foreach (var os in searcher.Get())
+                {
+                    return os["Version"]?.ToString() ?? string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows version.");
+            }
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Gets the full Windows version string, e.g., "Windows 11 Enterprise 24H2".
+        /// </summary>
+        private string GetFullWindowsVersionString()
+        {
+            string caption = "";
+            string edition = "";
+            string displayVersion = "";
+
+            // Get Caption (e.g., "Microsoft Windows 11 Enterprise")
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT Caption FROM Win32_OperatingSystem");
+                foreach (var os in searcher.Get())
+                {
+                    caption = os["Caption"]?.ToString() ?? "";
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows caption.");
+            }
+
+            // Extract Edition (last word of caption)
+            if (!string.IsNullOrWhiteSpace(caption))
+            {
+                var parts = caption.Split(' ');
+                if (parts.Length >= 2)
+                {
+                    edition = parts.Last(); // "Enterprise", "Pro", etc.
+                }
+            }
+
+            // Get DisplayVersion (e.g., "24H2") from registry
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+                displayVersion = key?.GetValue("DisplayVersion")?.ToString() ?? key?.GetValue("ReleaseId")?.ToString() ?? "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get Windows display version.");
+            }
+
+            // Compose string: "Windows 11 Enterprise 24H2"
+            string result = caption;
+            if (!string.IsNullOrWhiteSpace(displayVersion))
+            {
+                result += " " + displayVersion;
+            }
+            return result.Trim();
+        }
+
+        /// <summary>
+        /// Gets the latest installed Windows updates (last 5), with robust date parsing.
+        /// </summary>
+        private List<(string KBArticle, string Title, string InstalledOn)> GetLatestInstalledUpdates()
+        {
+            var updates = new List<(string KBArticle, string Title, string InstalledOn)>();
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT HotFixID, Description, InstalledOn FROM Win32_QuickFixEngineering");
+                foreach (ManagementObject update in searcher.Get())
+                {
+                    string kb = update["HotFixID"]?.ToString() ?? "";
+                    string title = update["Description"]?.ToString() ?? "";
+                    string installedOnStr = update["InstalledOn"]?.ToString() ?? "";
+
+                    // Try to parse date, fallback to raw string or "Unknown"
+                    string installedOnDisplay = "Unknown";
+                    if (!string.IsNullOrWhiteSpace(installedOnStr))
+                    {
+                        DateTime dt;
+                        if (DateTime.TryParse(installedOnStr, out dt) && dt.Year > 2000)
+                        {
+                            installedOnDisplay = dt.ToString("yyyy-MM-dd");
+                        }
+                        else
+                        {
+                            installedOnDisplay = installedOnStr;
+                        }
+                    }
+
+                    updates.Add((kb, title, installedOnDisplay));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get installed updates.");
+            }
+            // Order by date descending if possible, else by KB
+            return updates
+                .OrderByDescending(u => u.InstalledOn)
+                .Take(5)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Checks the latest installed Windows updates and logs them to App Insights and an external file.
+        /// </summary>
+        private void LogLatestWindowsUpdates()
+        {
+            var updateLogPath = _configuration.GetValue<string>("UpdateLog:FilePath") ?? "windows-updates.log";
+            var updates = GetLatestInstalledUpdates();
+
+            // Format for logging
+            string updateSummary = string.Join(Environment.NewLine, updates.Select(u =>
+                $"KB: {u.KBArticle}, {u.Title}, Installed: {u.InstalledOn}"));
+
+            // Local log file
+            try
+            {
+                var logDir = Path.GetDirectoryName(updateLogPath);
+                if (!string.IsNullOrWhiteSpace(logDir) && !Directory.Exists(logDir))
+                    Directory.CreateDirectory(logDir);
+
+                File.WriteAllText(updateLogPath, updateSummary);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to write update log file: {Path}", updateLogPath);
+            }
+
+            // ILogger
+            _logger.LogInformation("Latest Windows updates:\n{UpdateSummary}", updateSummary);
+
+            // App Insights
+            TrackTelemetryEvent(
+                "WindowsLatestUpdates",
+                new Dictionary<string, string?>
+                {
+                    ["UpdateSummary"] = updateSummary
+                },
+                isInformational: false);
         }
     }
 }
