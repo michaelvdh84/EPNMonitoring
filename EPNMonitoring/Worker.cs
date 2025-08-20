@@ -51,7 +51,7 @@ namespace EPNMonitoring
 
         // Port tests monitor
         private readonly string _portTestServer;
-        private readonly List<PortTestConfig> _portTests;
+        private readonly List<PortTestServerConfig> _portTestServers;
         private readonly int _portTestsCheckIntervalSeconds;
 
         // Event viewer monitor
@@ -108,8 +108,7 @@ namespace EPNMonitoring
 
             // Port tests monitor config
             var portTestsMonitorSection = _configuration.GetSection("PortTestsMonitor");
-            _portTestServer = portTestsMonitorSection.GetValue<string>("LogonServer");
-            _portTests = portTestsMonitorSection.GetSection("PortTests").Get<List<PortTestConfig>>() ?? new List<PortTestConfig>();
+            _portTestServers = portTestsMonitorSection.GetSection("Servers").Get<List<PortTestServerConfig>>() ?? new List<PortTestServerConfig>();
             _portTestsCheckIntervalSeconds = portTestsMonitorSection.GetValue<int>("CheckIntervalSeconds", 60);
 
             // Event viewer monitor config
@@ -433,62 +432,73 @@ namespace EPNMonitoring
         /// </summary>
         private void CheckServerPortsAndSendTelemetry()
         {
-            if (string.IsNullOrWhiteSpace(_portTestServer))
+            if (_portTestServers == null || _portTestServers.Count == 0)
             {
-                _logger.LogWarning("No server specified for port tests.");
+                _logger.LogWarning("No servers specified for port tests.");
                 TrackTelemetryEvent(
-                    "PortTestServerNotSpecified",
-                    new Dictionary<string, string?> { ["Reason"] = "No server specified in configuration." },
+                    "PortTestServersNotSpecified",
+                    new Dictionary<string, string?> { ["Reason"] = "No servers specified in configuration." },
                     isInformational: false);
                 return;
             }
 
-            if (_verboseLoggingLocal)
-                _logger.LogInformation("Checking ports on server: {Server}", _portTestServer);
-
-            foreach (var test in _portTests)
+            foreach (var server in _portTestServers)
             {
-                string result;
-                try
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Checking ports on server: {Server}", server.Name);
+
+                foreach (var port in server.Ports)
                 {
-                    using var client = new TcpClient();
-                    var connectTask = client.ConnectAsync(_portTestServer, test.Port);
-                    if (connectTask.Wait(System.TimeSpan.FromSeconds(3)) && client.Connected)
+                    string result;
+                    try
                     {
-                        result = "OPEN";
-                        if (_verboseLoggingLocal)
-                            _logger.LogInformation("Port '{Title}' ({Port}) on {Server}: OPEN", test.Title, test.Port, _portTestServer);
-                        TrackTelemetryEvent(
-                            "PortTestOpened",
-                            new Dictionary<string, string?>
-                            {
-                                ["Title"] = test.Title,
-                                ["Port"] = test.Port.ToString(),
-                                ["Server"] = _portTestServer,
-                                ["Result"] = result
-                            },
-                            isInformational: true);
+                        using var client = new TcpClient();
+                        var connectTask = client.ConnectAsync(server.Name, port);
+                        if (connectTask.Wait(TimeSpan.FromSeconds(3)) && client.Connected)
+                        {
+                            result = "OPEN";
+                            if (_verboseLoggingLocal)
+                                _logger.LogInformation("Port {Port} on {Server}: OPEN", port, server.Name);
+                            TrackTelemetryEvent(
+                                "PortTestOpened",
+                                new Dictionary<string, string?>
+                                {
+                                    ["Port"] = port.ToString(),
+                                    ["Server"] = server.Name,
+                                    ["Result"] = result
+                                },
+                                isInformational: true);
+                        }
+                        else
+                        {
+                            result = "CLOSED or TIMEOUT";
+                            _logger.LogWarning("Port {Port} on {Server}: CLOSED or TIMEOUT", port, server.Name);
+                            TrackTelemetryEvent(
+                                "PortTestTimeoutOrClosed",
+                                new Dictionary<string, string?>
+                                {
+                                    ["Port"] = port.ToString(),
+                                    ["Server"] = server.Name,
+                                    ["Result"] = result
+                                },
+                                isInformational: false);
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        result = "CLOSED or TIMEOUT";
-                        _logger.LogWarning("Port '{Title}' ({Port}) on {Server}: CLOSED or TIMEOUT", test.Title, test.Port, _portTestServer);
+                        result = "ERROR";
+                        _logger.LogError(ex, "Port {Port} on {Server}: ERROR", port, server.Name);
                         TrackTelemetryEvent(
-                            "PortTestTimeoutOrClosed",
+                            "PortTestError",
                             new Dictionary<string, string?>
                             {
-                                ["Title"] = test.Title,
-                                ["Port"] = test.Port.ToString(),
-                                ["Server"] = _portTestServer,
-                                ["Result"] = result
+                                ["Port"] = port.ToString(),
+                                ["Server"] = server.Name,
+                                ["Result"] = result,
+                                ["Error"] = ex.Message
                             },
                             isInformational: false);
                     }
-                }
-                catch (System.Exception ex)
-                {
-                    result = "ERROR";
-                    _logger.LogError(ex, "Port '{Title}' ({Port}) on {Server}: ERROR", test.Title, test.Port, _portTestServer);
                 }
             }
         }
