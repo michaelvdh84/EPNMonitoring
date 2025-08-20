@@ -70,6 +70,16 @@ namespace EPNMonitoring
         private readonly int _kioskUserCheckIntervalSeconds;
         private readonly List<string> _kioskUsers;
 
+        private readonly bool _processMonitorEnabled;
+        private readonly bool _crashReportMonitorEnabled;
+        private readonly bool _windowsLicenseMonitorEnabled;
+        private readonly bool _localLogEnabled;
+        private readonly bool _websiteMonitorEnabled;
+        private readonly bool _eventViewerMonitorEnabled;
+        private readonly bool _deviceMonitorEnabled;
+        private readonly bool _portTestsMonitorEnabled;
+        private readonly bool _kioskUserEnabled;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -137,6 +147,16 @@ namespace EPNMonitoring
                 _logger.LogInformation("Verbose local logging is DISABLED by configuration.");
 
             EnableApplicationInsightsDiagnostics();
+
+            _processMonitorEnabled = _configuration.GetValue<bool>("ProcessMonitor:Enabled", true);
+            _crashReportMonitorEnabled = _configuration.GetValue<bool>("CrashReportMonitor:Enabled", true);
+            _windowsLicenseMonitorEnabled = _configuration.GetValue<bool>("WindowsLicenseMonitor:Enabled", true);
+            _localLogEnabled = _configuration.GetValue<bool>("LocalLog:Enabled", true);
+            _websiteMonitorEnabled = _configuration.GetValue<bool>("WebsiteMonitor:Enabled", true);
+            _eventViewerMonitorEnabled = _configuration.GetValue<bool>("EventViewerMonitor:Enabled", true);
+            _deviceMonitorEnabled = _configuration.GetValue<bool>("DeviceMonitor:Enabled", true);
+            _portTestsMonitorEnabled = _configuration.GetValue<bool>("PortTestsMonitor:Enabled", true);
+            _kioskUserEnabled = _configuration.GetValue<bool>("KioskUser:Enabled", true);
         }
 
         /// <summary>
@@ -615,6 +635,7 @@ namespace EPNMonitoring
                 TrackTelemetryEvent(
                     "WindowsEditionMismatch",
                     new Dictionary<string, string?>
+
                     {
                         ["CurrentEdition"] = currentEdition,
                         ["ExpectedEdition"] = _expectedWindowsEdition
@@ -820,61 +841,61 @@ namespace EPNMonitoring
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                if (processCheckTimer <= 0)
+                if (processCheckTimer <= 0 && _processMonitorEnabled)
                 {
                     CheckProcessesAndSendTelemetry();
                     processCheckTimer = _checkIntervalSeconds;
                 }
 
-                if (crashReportTimer <= 0)
+                if (crashReportTimer <= 0 && _crashReportMonitorEnabled)
                 {
                     CheckAndMoveCrashReports();
                     crashReportTimer = _crashReportCheckIntervalSeconds;
                 }
 
-                if (licenseCheckTimer <= 0)
+                if (licenseCheckTimer <= 0 && _windowsLicenseMonitorEnabled)
                 {
                     await CheckWindowsEditionAndKmsAsync(stoppingToken);
                     licenseCheckTimer = _licenseCheckIntervalSeconds;
                 }
 
-                if (websiteCheckTimer <= 0)
+                if (websiteCheckTimer <= 0 && _websiteMonitorEnabled)
                 {
                     await CheckWebsitesConnectivityAsync();
                     websiteCheckTimer = _websiteCheckIntervalSeconds;
                 }
 
-                if (deviceCheckTimer <= 0)
+                if (deviceCheckTimer <= 0 && _deviceMonitorEnabled)
                 {
                     CheckDevicesAndSendTelemetry();
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
                 }
 
-                if (portTestsCheckTimer <= 0)
+                if (portTestsCheckTimer <= 0 && _portTestsMonitorEnabled)
                 {
                     CheckServerPortsAndSendTelemetry();
                     portTestsCheckTimer = _portTestsCheckIntervalSeconds;
                 }
 
-                if (eventViewerCheckTimer <= 0)
+                if (eventViewerCheckTimer <= 0 && _eventViewerMonitorEnabled)
                 {
                     CheckEventViewerForApplicationErrors();
                     eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
                 }
 
-                if (cleanLocalLogTimer <= 0)
+                if (cleanLocalLogTimer <= 0 && _localLogEnabled)
                 {
                     CleanLocalLogIfNeeded();
                     cleanLocalLogTimer = 3600;
                 }
 
-                if (activeUserCheckTimer <= 0)
+                if (activeUserCheckTimer <= 0 && _kioskUserEnabled)
                 {
                     CheckAndLogActiveUser();
                     activeUserCheckTimer = 60;
                 }
 
-                if (kioskUserCheckTimer <= 0)
+                if (kioskUserCheckTimer <= 0 && _kioskUserEnabled)
                 {
                     CheckAndLogActiveUser();
                     kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
