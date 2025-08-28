@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace EPNMonitoring
 {
@@ -89,6 +90,9 @@ namespace EPNMonitoring
 
         // Local log settings
         private readonly int _localLogCheckIntervalSeconds;
+
+        [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetDefaultPrinter(string name);
 
         public Worker(
             ILogger<Worker> logger,
@@ -520,15 +524,10 @@ namespace EPNMonitoring
 
                         if (_removeOfflinePrinters)
                         {
-                            try
-                            {
-                                printer.Delete();
+                            if (TryRemovePrinter(printer, name))
                                 _logger.LogInformation("Removed offline printer: {Name}", name);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, "Failed to remove printer: {Name}", name);
-                            }
+                            else
+                                _logger.LogWarning("Unable to remove offline printer: {Name}", name);
                         }
                     }
                 }
@@ -545,9 +544,17 @@ namespace EPNMonitoring
                 {
                     try
                     {
-                        onlinePrinter.InvokeMethod("SetDefaultPrinter", null);
-                        if (_verboseLoggingLocal)
-                            _logger.LogInformation("Set default printer to {Name}", onlinePrinter["Name"]);
+                        string? printerName = onlinePrinter["Name"]?.ToString();
+                        if (!string.IsNullOrEmpty(printerName) && SetDefaultPrinter(printerName))
+                        {
+                            if (_verboseLoggingLocal)
+                                _logger.LogInformation("Set default printer to {Name}", printerName);
+                        }
+                        else
+                        {
+                            int error = Marshal.GetLastWin32Error();
+                            _logger.LogError("Failed to set default printer: {Name} (Error={Error})", printerName, error);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -559,6 +566,41 @@ namespace EPNMonitoring
             {
                 _logger.LogError(ex, "Printer check failed.");
             }
+        }
+
+        private bool TryRemovePrinter(ManagementObject printer, string name)
+        {
+            bool removed = false;
+            try
+            {
+                var result = printer.InvokeMethod("Delete", null);
+                removed = result == null || Convert.ToUInt32(result) == 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "WMI delete failed for printer {Name}", name);
+            }
+
+            if (!removed)
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo("rundll32.exe", $"printui.dll,PrintUIEntry /dn /n \"{name}\"")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    };
+                    using var proc = Process.Start(psi);
+                    proc?.WaitForExit();
+                    removed = proc?.ExitCode == 0;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to remove printer via PrintUIEntry: {Name}", name);
+                }
+            }
+
+            return removed;
         }
 
         /// <summary>
