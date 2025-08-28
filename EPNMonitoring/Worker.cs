@@ -49,6 +49,12 @@ namespace EPNMonitoring
         private readonly List<string> _devicesToCheck;
         private readonly int _deviceCheckIntervalSeconds;
 
+        // Printer monitor
+        private readonly string _printerNameWildcard;
+        private readonly int _printerCheckIntervalSeconds;
+        private readonly bool _removeOfflinePrinters;
+        private readonly bool _setDefaultPrinter;
+
         // Port tests monitor
         private readonly string _portTestServer;
         private readonly List<PortTestServerConfig> _portTestServers;
@@ -78,6 +84,7 @@ namespace EPNMonitoring
         private readonly bool _eventViewerMonitorEnabled;
         private readonly bool _deviceMonitorEnabled;
         private readonly bool _portTestsMonitorEnabled;
+        private readonly bool _printerMonitorEnabled;
         private readonly bool _kioskUserEnabled;
 
         // Local log settings
@@ -119,6 +126,13 @@ namespace EPNMonitoring
             _devicesToCheck = _configuration.GetSection("DeviceMonitor:Devices").Get<List<string>>() ?? new List<string>();
             _deviceCheckIntervalSeconds = _configuration.GetValue<int>("DeviceMonitor:CheckIntervalSeconds", 60);
 
+            // Printer monitor config
+            var printerSection = _configuration.GetSection("PrinterMonitor");
+            _printerNameWildcard = printerSection.GetValue<string>("PrinterNameWildcard", "Brother HL");
+            _printerCheckIntervalSeconds = printerSection.GetValue<int>("CheckIntervalSeconds", 300);
+            _removeOfflinePrinters = printerSection.GetValue<bool>("RemoveOfflinePrinters", false);
+            _setDefaultPrinter = printerSection.GetValue<bool>("SetAsDefaultPrinter", false);
+
             // Port tests monitor config
             var portTestsMonitorSection = _configuration.GetSection("PortTestsMonitor");
             _portTestServers = portTestsMonitorSection.GetSection("Servers").Get<List<PortTestServerConfig>>() ?? new List<PortTestServerConfig>();
@@ -159,6 +173,7 @@ namespace EPNMonitoring
             _eventViewerMonitorEnabled = _configuration.GetValue<bool>("EventViewerMonitor:Enabled", true);
             _deviceMonitorEnabled = _configuration.GetValue<bool>("DeviceMonitor:Enabled", true);
             _portTestsMonitorEnabled = _configuration.GetValue<bool>("PortTestsMonitor:Enabled", true);
+            _printerMonitorEnabled = _configuration.GetValue<bool>("PrinterMonitor:Enabled", true);
             _kioskUserEnabled = _configuration.GetValue<bool>("KioskUser:Enabled", true);
 
             // Local log settings
@@ -452,6 +467,98 @@ namespace EPNMonitoring
                 _logger.LogInformation("Device check summary: {Found} found, {Missing} missing, {Total} total.", foundCount, missingCount, _devicesToCheck.Count);
 
             // Flushing handled by TrackTelemetryEvent
+        }
+
+        /// <summary>
+        /// Checks printers matching the configured wildcard and ensures one is online.
+        /// Offline printers can optionally be removed and the online printer set as default.
+        /// </summary>
+        private void CheckPrintersAndSendTelemetry()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_printerNameWildcard))
+                {
+                    _logger.LogWarning("PrinterNameWildcard not configured.");
+                    return;
+                }
+                string query = $"SELECT * FROM Win32_Printer WHERE Name LIKE '{_printerNameWildcard.Replace("'", "''")}%'";
+                using var searcher = new ManagementObjectSearcher(query);
+                var printers = searcher.Get().Cast<ManagementObject>().ToList();
+
+                if (_verboseLoggingLocal)
+                    _logger.LogInformation("Printer check started. Wildcard: {Wildcard}, Found: {Count}", _printerNameWildcard, printers.Count);
+
+                ManagementObject? onlinePrinter = null;
+
+                foreach (var printer in printers)
+                {
+                    string name = printer["Name"]?.ToString() ?? string.Empty;
+                    bool workOffline = (bool)(printer["WorkOffline"] ?? false);
+                    int status = 0;
+                    try { status = Convert.ToInt32(printer["PrinterStatus"] ?? 0); } catch { }
+                    bool isOnline = !workOffline && status == 3; // 3 = Idle
+
+                    if (isOnline)
+                    {
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Printer online: {Name}", name);
+                        onlinePrinter = printer;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Printer offline or busy: {Name} (Status={Status}, WorkOffline={WorkOffline})", name, status, workOffline);
+                        TrackTelemetryEvent(
+                            "PrinterOffline",
+                            new Dictionary<string, string?>
+                            {
+                                ["PrinterName"] = name,
+                                ["Status"] = status.ToString(),
+                                ["WorkOffline"] = workOffline.ToString()
+                            },
+                            isInformational: false);
+
+                        if (_removeOfflinePrinters)
+                        {
+                            try
+                            {
+                                printer.Delete();
+                                _logger.LogInformation("Removed offline printer: {Name}", name);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Failed to remove printer: {Name}", name);
+                            }
+                        }
+                    }
+                }
+
+                if (onlinePrinter == null)
+                {
+                    _logger.LogError("No online printers found for wildcard {Wildcard}", _printerNameWildcard);
+                    TrackTelemetryEvent(
+                        "PrinterOnlineNotFound",
+                        new Dictionary<string, string?> { ["Wildcard"] = _printerNameWildcard },
+                        isInformational: false);
+                }
+                else if (_setDefaultPrinter)
+                {
+                    try
+                    {
+                        onlinePrinter.InvokeMethod("SetDefaultPrinter", null);
+                        if (_verboseLoggingLocal)
+                            _logger.LogInformation("Set default printer to {Name}", onlinePrinter["Name"]);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to set default printer: {Name}", onlinePrinter["Name"]);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Printer check failed.");
+            }
         }
 
         /// <summary>
@@ -850,6 +957,7 @@ namespace EPNMonitoring
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
             var processCheckTimer = _checkIntervalSeconds;
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
+            var printerCheckTimer = _printerCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
             var eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
             var cleanLocalLogTimer = _localLogCheckIntervalSeconds;
@@ -886,6 +994,12 @@ namespace EPNMonitoring
                 {
                     CheckDevicesAndSendTelemetry();
                     deviceCheckTimer = _deviceCheckIntervalSeconds;
+                }
+
+                if (printerCheckTimer <= 0 && _printerMonitorEnabled)
+                {
+                    CheckPrintersAndSendTelemetry();
+                    printerCheckTimer = _printerCheckIntervalSeconds;
                 }
 
                 if (portTestsCheckTimer <= 0 && _portTestsMonitorEnabled)
@@ -925,6 +1039,7 @@ namespace EPNMonitoring
                 websiteCheckTimer--;
                 processCheckTimer--;
                 deviceCheckTimer--;
+                printerCheckTimer--;
                 portTestsCheckTimer--;
                 eventViewerCheckTimer--;
                 cleanLocalLogTimer--;

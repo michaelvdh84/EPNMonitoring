@@ -12,7 +12,7 @@ EPNMonitoring is a .NET 8 Worker Service designed for automated monitoring and t
 - **Device Monitoring:** Verifies presence of specified hardware devices at set intervals.
 - **Port Tests:** Tests connectivity to specified ports on configured servers.
 - **Kiosk User Monitoring:** Checks for the presence of configured kiosk user accounts.
-- **Default Printer Monitoring:** Ensures the default printer is set and can force the setting if required.
+ - **Printer Monitoring:** Verifies that a printer matching a configurable wildcard is online, can remove offline matches, and optionally sets it as the default printer.
 - **Verbose Logging:** Configurable logging to local file and Application Insights, with verbosity options for each.
 - **Local Log Management:** Maintains a local log file with autoclean and maximum size options.
 - **Update Log File:** Records Windows update logs to a specified file.
@@ -233,19 +233,21 @@ Below is a description of each configuration section and its parameters, based o
 
 ---
 
-### DefaultPrinter
+### PrinterMonitor
 ```json
-"DefaultPrinter": {
+"PrinterMonitor": {
   "Enabled": true,
-  "Name": "HP96",
-  "CheckIntervalSeconds": 60,
-  "ForceDefault": true
+  "PrinterNameWildcard": "Brother HL",
+  "CheckIntervalSeconds": 300,
+  "RemoveOfflinePrinters": false,
+  "SetAsDefaultPrinter": true
 }
 ```
-- **Enabled:** Enable/disable default printer monitoring.
-- **Name:** Name of the default printer.
-- **CheckIntervalSeconds:** How often to check the default printer.
-- **ForceDefault:** Force setting the default printer if needed.
+- **Enabled:** Enable/disable printer monitoring.
+- **PrinterNameWildcard:** Wildcard prefix used to identify the printer.
+- **CheckIntervalSeconds:** How often to check printer availability.
+- **RemoveOfflinePrinters:** Remove printers matching the wildcard that are offline.
+- **SetAsDefaultPrinter:** Set the online matching printer as the default.
 
 ---
 
