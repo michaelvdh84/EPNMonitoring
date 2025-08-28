@@ -855,7 +855,6 @@ namespace EPNMonitoring
             var cleanLocalLogTimer = _localLogCheckIntervalSeconds;
             var activeUserCheckTimer = 60;
             var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
-            var defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
 
                 while (!stoppingToken.IsCancellationRequested)
             {
