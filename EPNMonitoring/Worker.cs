@@ -86,6 +86,9 @@ namespace EPNMonitoring
         private readonly int _defaultPrinterCheckIntervalSeconds;
         private readonly bool _defaultPrinterForceDefault;
 
+        // Local log settings
+        private readonly int _localLogCheckIntervalSeconds;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -170,6 +173,10 @@ namespace EPNMonitoring
             _defaultPrinterName = defaultPrinterSection.GetValue<string>("Name", "");
             _defaultPrinterCheckIntervalSeconds = defaultPrinterSection.GetValue<int>("CheckIntervalSeconds", 60);
             _defaultPrinterForceDefault = defaultPrinterSection.GetValue<bool>("ForceDefault", false);
+
+            // Local log settings
+            var localLogSection = _configuration.GetSection("LocalLog");
+            _localLogCheckIntervalSeconds = localLogSection.GetValue<int>("CheckIntervalSeconds", 3600);
         }
 
         /// <summary>
@@ -607,12 +614,16 @@ namespace EPNMonitoring
             {
                 try
                 {
-                    File.WriteAllText(logPath, string.Empty);
-                    _logger.LogWarning("Local log file exceeded {MaxLogSize} bytes and was cleaned.", maxSize);
+                    // Truncate the file without removing listeners
+                    using (var fs = new FileStream(logPath, FileMode.Truncate, FileAccess.Write, FileShare.ReadWrite))
+                    {
+                        // File is now empty
+                    }
+                    _logger.LogWarning("Local log file exceeded {MaxLogSize} bytes and was truncated.", maxSize);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to clean local log file: {LogPath}", logPath);
+                    _logger.LogError(ex, "Failed to truncate local log file: {LogPath}", logPath);
                 }
             }
         }
@@ -1033,7 +1044,7 @@ namespace EPNMonitoring
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
             var eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
-            var cleanLocalLogTimer = 3600;
+            var cleanLocalLogTimer = _localLogCheckIntervalSeconds;
             var activeUserCheckTimer = 60;
             var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
             var defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
@@ -1090,14 +1101,14 @@ namespace EPNMonitoring
                 if (cleanLocalLogTimer <= 0 && _localLogEnabled)
                 {
                     CleanLocalLogIfNeeded();
-                    cleanLocalLogTimer = 3600;
+                    cleanLocalLogTimer = _localLogCheckIntervalSeconds;
                 }
 
-                if (activeUserCheckTimer <= 0 && _kioskUserEnabled)
-                {
-                    CheckAndLogActiveUser();
-                    activeUserCheckTimer = 60;
-                }
+                //if (activeUserCheckTimer <= 0 && _kioskUserEnabled)
+                //{
+                //    CheckAndLogActiveUser();
+                //    activeUserCheckTimer = _kioskUserCheckIntervalSeconds;
+                //}
 
                 if (kioskUserCheckTimer <= 0 && _kioskUserEnabled)
                 {
