@@ -29,6 +29,12 @@ namespace EPNMonitoring
             // Log latest Windows updates at startup
             LogLatestWindowsUpdates();
 
+            // Get and log AD Site at startup
+            if (_getAdSiteEnabled)
+            {
+                await GetAdSiteAsync(stoppingToken);
+            }
+
             var crashReportTimer = 0;
             var licenseCheckTimer = _licenseCheckIntervalSeconds;
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
