@@ -27,7 +27,8 @@ namespace EPNMonitoring
             if (_eventViewerApplications.Count == 0)
                 return;
 
-            string query = "*[System[(EventID=1000 and Provider[@Name='Application Error'])]]";
+            long timeCreatedTicks = _lastEventViewerCheck.ToFileTimeUtc();
+            string query = $"*[System[(EventID=1000 and Provider[@Name='Application Error']) and TimeCreated[@SystemTime>='{_lastEventViewerCheck:o}']]]";
             var logQuery = new EventLogQuery("Application", PathType.LogName, query);
 
             try
