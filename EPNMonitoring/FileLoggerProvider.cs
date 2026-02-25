@@ -11,7 +11,7 @@ namespace EPNMonitoring
     {
         private readonly string _filePath;
         private readonly object _lock = new();
-        private readonly StreamWriter _writer;
+        private StreamWriter _writer;
 
         public FileLoggerProvider(string filePath)
         {
@@ -27,20 +27,63 @@ namespace EPNMonitoring
             };
         }
 
-        public ILogger CreateLogger(string categoryName) => new FileLogger(_writer, _lock, categoryName);
+        public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
 
-        public void Dispose() => _writer.Dispose();
+        /// <summary>
+        /// Truncates the log file by rotating it and keeping the last 5 backup files.
+        /// The current file is renamed to .001, previous .001 becomes .002, etc.
+        /// The oldest file (.005) is deleted.
+        /// </summary>
+        public void TruncateLog()
+        {
+            lock (_lock)
+            {
+                _writer?.Dispose();
+
+                // Rotate backup files (delete .005, rename .004 to .005, .003 to .004, etc.)
+                const int maxBackups = 5;
+                for (int i = maxBackups; i >= 1; i--)
+                {
+                    string sourceFile = i == 1 ? _filePath : $"{_filePath}.{i - 1:D3}";
+                    string targetFile = $"{_filePath}.{i:D3}";
+
+                    if (i == maxBackups && File.Exists(targetFile))
+                    {
+                        File.Delete(targetFile);
+                    }
+
+                    if (File.Exists(sourceFile))
+                    {
+                        File.Move(sourceFile, targetFile, overwrite: true);
+                    }
+                }
+
+                // Create a new empty log file
+                _writer = new StreamWriter(File.Open(_filePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    AutoFlush = true
+                };
+            }
+        }
+
+        internal void WriteLog(string line)
+        {
+            lock (_lock)
+            {
+                _writer?.WriteLine(line);
+            }
+        }
+
+        public void Dispose() => _writer?.Dispose();
 
         private sealed class FileLogger : ILogger
         {
-            private readonly StreamWriter _writer;
-            private readonly object _lock;
+            private readonly FileLoggerProvider _provider;
             private readonly string _categoryName;
 
-            public FileLogger(StreamWriter writer, object lockObj, string categoryName)
+            public FileLogger(FileLoggerProvider provider, string categoryName)
             {
-                _writer = writer;
-                _lock = lockObj;
+                _provider = provider;
                 _categoryName = categoryName;
             }
 
@@ -62,10 +105,7 @@ namespace EPNMonitoring
                     line += $" {exception}";
                 }
 
-                lock (_lock)
-                {
-                    _writer.WriteLine(line);
-                }
+                _provider.WriteLog(line);
             }
         }
     }

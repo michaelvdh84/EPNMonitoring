@@ -36,7 +36,7 @@ namespace EPNMonitoring
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
             var eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
-            var cleanLocalLogTimer = 3600;
+            var cleanLocalLogTimer = _configuration.GetValue<int>("LocalLog:CheckIntervalSeconds", 60);
             var activeUserCheckTimer = 60;
             var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
             var defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
@@ -93,7 +93,7 @@ namespace EPNMonitoring
                 if (cleanLocalLogTimer <= 0 && _localLogEnabled)
                 {
                     CleanLocalLogIfNeeded();
-                    cleanLocalLogTimer = 3600;
+                    cleanLocalLogTimer = _configuration.GetValue<int>("LocalLog:CheckIntervalSeconds", 60);
                 }
 
                 if (activeUserCheckTimer <= 0 && _kioskUserEnabled)

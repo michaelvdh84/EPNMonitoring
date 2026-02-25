@@ -32,7 +32,9 @@ namespace EPNMonitoring.Hosting
             var localLogPath = builder.Configuration.GetValue<string>("LocalLog:FilePath");
             if (!string.IsNullOrWhiteSpace(localLogPath))
             {
-                builder.Logging.AddProvider(new FileLoggerProvider(localLogPath));
+                var fileLoggerProvider = new FileLoggerProvider(localLogPath);
+                builder.Services.AddSingleton(fileLoggerProvider);
+                builder.Logging.AddProvider(fileLoggerProvider);
             }
         }
 
