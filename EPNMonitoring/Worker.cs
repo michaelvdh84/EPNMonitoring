@@ -22,6 +22,7 @@ namespace EPNMonitoring
         private readonly ILogger<Worker> _logger;
         private readonly TelemetryClient _telemetryClient;
         private readonly IConfiguration _configuration;
+        private readonly FileLoggerProvider _fileLoggerProvider;
 
         // Process monitor
         private readonly int _checkIntervalSeconds;
@@ -90,11 +91,13 @@ namespace EPNMonitoring
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            FileLoggerProvider fileLoggerProvider = null)
         {
             _logger = logger;
             _telemetryClient = telemetryClient;
             _configuration = configuration;
+            _fileLoggerProvider = fileLoggerProvider;
 
             // Process monitor config
             _checkIntervalSeconds = _configuration.GetValue<int>("ProcessMonitor:CheckIntervalSeconds", 10);
