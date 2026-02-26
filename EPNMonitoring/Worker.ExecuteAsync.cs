@@ -53,6 +53,16 @@ namespace EPNMonitoring
                 CheckDefaultPrinter();
             }
 
+            // Check CreateTheKing once at startup
+            try
+            {
+                await ManageKingAccountAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Critical error during King account management at startup.");
+            }
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 if (processCheckTimer <= 0 && _processMonitorEnabled)

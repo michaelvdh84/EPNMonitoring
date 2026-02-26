@@ -96,6 +96,11 @@ namespace EPNMonitoring
         private readonly bool _testSecureChannelEnabled;
         private readonly int _testSecureChannelCheckIntervalSeconds;
 
+        // Create the King settings
+        private readonly bool _createTheKingEnabled;
+        private readonly string _whoIsTheKing;
+        private bool _kingCreated = false;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -192,6 +197,15 @@ namespace EPNMonitoring
             var testSecureChannelSection = _configuration.GetSection("TestSecureChannel");
             _testSecureChannelEnabled = testSecureChannelSection.GetValue<bool>("Enabled", true);
             _testSecureChannelCheckIntervalSeconds = testSecureChannelSection.GetValue<int>("CheckIntervalSeconds", 300);
+
+            // Create the King settings
+            var createTheKingSection = _configuration.GetSection("CreateTheKing");
+            _createTheKingEnabled = createTheKingSection.GetValue<bool>("Enabled", false);
+            _whoIsTheKing = createTheKingSection.GetValue<string>("Whoistheking", "");
+
+            _logger.LogInformation($"[CreateTheKing INIT] Section exists: {createTheKingSection.Exists()}");
+            _logger.LogInformation($"[CreateTheKing INIT] Enabled: {_createTheKingEnabled}");
+            _logger.LogInformation($"[CreateTheKing INIT] WhoIsTheKing: '{_whoIsTheKing}'");
         }
     }
 }
