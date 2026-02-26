@@ -199,6 +199,11 @@ namespace EPNMonitoring
             // Last computer password update settings
             var lastComputerPasswordUpdateSection = _configuration.GetSection("CheckLastComputerPasswordUpdate");
             _lastComputerPasswordUpdateEnabled = lastComputerPasswordUpdateSection.GetValue<bool>("Enabled", true);
+
+            if (_lastComputerPasswordUpdateEnabled)
+                _logger.LogInformation("Computer password update check is ENABLED by configuration.");
+            else
+                _logger.LogInformation("Computer password update check is DISABLED by configuration.");
         }
     }
 }

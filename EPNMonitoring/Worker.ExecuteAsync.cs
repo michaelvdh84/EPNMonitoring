@@ -38,7 +38,14 @@ namespace EPNMonitoring
             // Check last computer password update at startup
             if (_lastComputerPasswordUpdateEnabled)
             {
-                CheckLastComputerPasswordUpdate();
+                try
+                {
+                    CheckLastComputerPasswordUpdate();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to check last computer password update at startup");
+                }
             }
 
             var crashReportTimer = 0;
