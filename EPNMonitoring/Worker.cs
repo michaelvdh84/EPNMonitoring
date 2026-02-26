@@ -88,6 +88,14 @@ namespace EPNMonitoring
         private readonly int _defaultPrinterCheckIntervalSeconds;
         private readonly bool _defaultPrinterForceDefault;
 
+        // Get AD Site settings
+        private readonly bool _getAdSiteEnabled;
+        private readonly string _expectedAdSite;
+
+        // Test secure channel settings
+        private readonly bool _testSecureChannelEnabled;
+        private readonly int _testSecureChannelCheckIntervalSeconds;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -174,6 +182,16 @@ namespace EPNMonitoring
             _defaultPrinterName = defaultPrinterSection.GetValue<string>("Name", "");
             _defaultPrinterCheckIntervalSeconds = defaultPrinterSection.GetValue<int>("CheckIntervalSeconds", 60);
             _defaultPrinterForceDefault = defaultPrinterSection.GetValue<bool>("ForceDefault", false);
+
+            // Get AD Site settings
+            var getAdSiteSection = _configuration.GetSection("GetAdSite");
+            _getAdSiteEnabled = getAdSiteSection.GetValue<bool>("Enabled", true);
+            _expectedAdSite = getAdSiteSection.GetValue<string>("ExpectedADSite", "");
+
+            // Test secure channel settings
+            var testSecureChannelSection = _configuration.GetSection("TestSecureChannel");
+            _testSecureChannelEnabled = testSecureChannelSection.GetValue<bool>("Enabled", true);
+            _testSecureChannelCheckIntervalSeconds = testSecureChannelSection.GetValue<int>("CheckIntervalSeconds", 300);
         }
     }
 }
