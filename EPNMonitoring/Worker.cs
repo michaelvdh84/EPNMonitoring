@@ -96,6 +96,9 @@ namespace EPNMonitoring
         private readonly bool _testSecureChannelEnabled;
         private readonly int _testSecureChannelCheckIntervalSeconds;
 
+        // Last computer password update settings
+        private readonly bool _lastComputerPasswordUpdateEnabled;
+
         public Worker(
             ILogger<Worker> logger,
             TelemetryClient telemetryClient,
@@ -192,6 +195,10 @@ namespace EPNMonitoring
             var testSecureChannelSection = _configuration.GetSection("TestSecureChannel");
             _testSecureChannelEnabled = testSecureChannelSection.GetValue<bool>("Enabled", true);
             _testSecureChannelCheckIntervalSeconds = testSecureChannelSection.GetValue<int>("CheckIntervalSeconds", 300);
+
+            // Last computer password update settings
+            var lastComputerPasswordUpdateSection = _configuration.GetSection("CheckLastComputerPasswordUpdate");
+            _lastComputerPasswordUpdateEnabled = lastComputerPasswordUpdateSection.GetValue<bool>("Enabled", true);
         }
     }
 }

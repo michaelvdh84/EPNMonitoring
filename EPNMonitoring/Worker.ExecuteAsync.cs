@@ -35,6 +35,12 @@ namespace EPNMonitoring
                 await GetAdSiteAsync(stoppingToken);
             }
 
+            // Check last computer password update at startup
+            if (_lastComputerPasswordUpdateEnabled)
+            {
+                CheckLastComputerPasswordUpdate();
+            }
+
             var crashReportTimer = 0;
             var licenseCheckTimer = _licenseCheckIntervalSeconds;
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
