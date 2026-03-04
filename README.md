@@ -13,9 +13,11 @@ EPNMonitoring is a .NET 8 Worker Service designed for automated monitoring and t
 - **Port Tests:** Tests connectivity to specified ports on configured servers.
 - **Kiosk User Monitoring:** Checks for the presence of configured kiosk user accounts.
 - **Default Printer Monitoring:** Ensures the default printer is set and can force the setting if required.
+- **AD Site Monitoring:** Verifies the computer is assigned to the correct Active Directory site.
+- **Secure Channel Testing:** Tests the trust relationship between the computer and domain controller.
+- **Computer Password Update Check:** Reports when the computer account password was last changed in Active Directory.
 - **Verbose Logging:** Configurable logging to local file and Application Insights, with verbosity options for each.
 - **Local Log Management:** Maintains a local log file with autoclean and maximum size options.
-- **Update Log File:** Records Windows update logs to a specified file.
 
 ---
 
@@ -100,17 +102,23 @@ Below is a description of each configuration section and its parameters, based o
   "Enabled": true,
   "CheckIntervalSeconds": 30,
   "ExpectedEdition": "Enterprise",
-  "KMSKey": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
+  "KmsServer": "kms.domain.com",
+  "KmsServerPort": 1688,
+  "KmsDnsEntry": "_vlmcs._tcp",
+  "KmsKey": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX",
   "EnableActivation": true,
   "RestartAfterActivation": true
 }
 ```
 - **Enabled:** Enable/disable license monitoring.
-- **CheckIntervalSeconds:** How often to check Windows license status.
-- **ExpectedEdition:** Required Windows edition.
-- **KMSKey:** Product key for KMS activation.
-- **EnableActivation:** Attempt activation if needed.
-- **RestartAfterActivation:** Restart after successful activation.
+- **CheckIntervalSeconds:** How often to check Windows license status (default: 3600 seconds).
+- **ExpectedEdition:** Required Windows edition (default: "Enterprise").
+- **KmsServer:** Optional KMS server address. If not specified, DNS discovery will be used.
+- **KmsServerPort:** KMS server port (default: 1688).
+- **KmsDnsEntry:** DNS entry for KMS discovery (default: "_vlmcs._tcp").
+- **KmsKey:** Product key for KMS activation (optional).
+- **EnableActivation:** Attempt activation if needed (default: false).
+- **RestartAfterActivation:** Restart after successful activation (default: false).
 
 ---
 
@@ -119,7 +127,7 @@ Below is a description of each configuration section and its parameters, based o
 "LocalLog": {
   "Enabled": true,
   "FilePath": "C:\\temp\\ai-internal.log",
-  "MaxLogSize": 10485760,
+  "MaxLogSize": 17000,
   "Autoclean": true
 }
 ```
@@ -152,14 +160,14 @@ Below is a description of each configuration section and its parameters, based o
 ```json
 "EventViewerMonitor": {
   "Enabled": true,
-  "CheckIntervalSeconds": 60,
+  "CheckIntervalSeconds": 30,
   "Applications": [
     "notepad.exe"
   ]
 }
 ```
 - **Enabled:** Enable/disable Event Viewer monitoring.
-- **CheckIntervalSeconds:** How often to scan Event Viewer.
+- **CheckIntervalSeconds:** How often to scan Event Viewer (default: 300 seconds).
 - **Applications:** List of application names to monitor for specific events.
 
 ---
@@ -249,13 +257,43 @@ Below is a description of each configuration section and its parameters, based o
 
 ---
 
-### UpdateLog
+### GetAdSite
 ```json
-"UpdateLog": {
-  "FilePath": "C:\\temp\\windows-updates.log"
+"GetAdSite": {
+  "Enabled": true,
+  "ExpectedADSite": "MainOffice"
 }
 ```
-- **FilePath:** Path to the Windows update log file.
+- **Enabled:** Enable/disable Active Directory site monitoring.
+- **ExpectedADSite:** The expected AD site name for this computer. Leave empty to only report current site without validation.
+
+**Purpose:** Verifies the computer is assigned to the correct Active Directory site for proper GPO application and network routing.
+
+---
+
+### TestSecureChannel
+```json
+"TestSecureChannel": {
+  "Enabled": true,
+  "CheckIntervalSeconds": 300
+}
+```
+- **Enabled:** Enable/disable secure channel testing.
+- **CheckIntervalSeconds:** How often to test the secure channel between the computer and domain controller.
+
+**Purpose:** Detects broken trust relationships between the computer and the domain, which can cause authentication failures.
+
+---
+
+### CheckLastComputerPasswordUpdate
+```json
+"CheckLastComputerPasswordUpdate": {
+  "Enabled": true
+}
+```
+- **Enabled:** Enable/disable checking the computer account password last update date.
+
+**Purpose:** Identifies computers with stale passwords that may cause authentication issues. This check runs once at service startup and reports the last password change date from Active Directory.
 
 ---
 
