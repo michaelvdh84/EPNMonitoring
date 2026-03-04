@@ -29,6 +29,12 @@ namespace EPNMonitoring
             // Log latest Windows updates at startup
             LogLatestWindowsUpdates();
 
+            // Get and log AD Site at startup
+            if (_getAdSiteEnabled)
+            {
+                await GetAdSiteAsync(stoppingToken);
+            }
+
             var crashReportTimer = 0;
             var licenseCheckTimer = _licenseCheckIntervalSeconds;
             var websiteCheckTimer = _websiteCheckIntervalSeconds;
@@ -36,10 +42,11 @@ namespace EPNMonitoring
             var deviceCheckTimer = _deviceCheckIntervalSeconds;
             var portTestsCheckTimer = _portTestsCheckIntervalSeconds;
             var eventViewerCheckTimer = _eventViewerCheckIntervalSeconds;
-            var cleanLocalLogTimer = 3600;
+            var cleanLocalLogTimer = _configuration.GetValue<int>("LocalLog:CheckIntervalSeconds", 60);
             var activeUserCheckTimer = 60;
             var kioskUserCheckTimer = _kioskUserCheckIntervalSeconds;
             var defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
+            var testSecureChannelTimer = _testSecureChannelCheckIntervalSeconds;
 
             if (_defaultPrinterEnabled)
             {
@@ -93,7 +100,7 @@ namespace EPNMonitoring
                 if (cleanLocalLogTimer <= 0 && _localLogEnabled)
                 {
                     CleanLocalLogIfNeeded();
-                    cleanLocalLogTimer = 3600;
+                    cleanLocalLogTimer = _configuration.GetValue<int>("LocalLog:CheckIntervalSeconds", 60);
                 }
 
                 if (activeUserCheckTimer <= 0 && _kioskUserEnabled)
@@ -114,6 +121,12 @@ namespace EPNMonitoring
                     defaultPrinterCheckTimer = _defaultPrinterCheckIntervalSeconds;
                 }
 
+                if (testSecureChannelTimer <= 0 && _testSecureChannelEnabled)
+                {
+                    await CheckSecureChannelAsync(stoppingToken);
+                    testSecureChannelTimer = _testSecureChannelCheckIntervalSeconds;
+                }
+
                 await Task.Delay(System.TimeSpan.FromSeconds(1), stoppingToken);
                 crashReportTimer--;
                 licenseCheckTimer--;
@@ -126,6 +139,7 @@ namespace EPNMonitoring
                 activeUserCheckTimer--;
                 kioskUserCheckTimer--;
                 defaultPrinterCheckTimer--;
+                testSecureChannelTimer--;
             }
         }
     }

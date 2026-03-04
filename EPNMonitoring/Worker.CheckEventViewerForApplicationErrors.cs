@@ -27,7 +27,11 @@ namespace EPNMonitoring
             if (_eventViewerApplications.Count == 0)
                 return;
 
-            string query = "*[System[(EventID=1000 and Provider[@Name='Application Error'])]]";
+            var checkTime = _lastEventViewerCheck == DateTime.MinValue 
+                ? DateTime.Now.AddHours(-1) 
+                : _lastEventViewerCheck;
+
+            string query = $"*[System[(EventID=1000 and Provider[@Name='Application Error']) and TimeCreated[@SystemTime>='{checkTime:o}']]]";
             var logQuery = new EventLogQuery("Application", PathType.LogName, query);
 
             try
@@ -35,7 +39,7 @@ namespace EPNMonitoring
                 using var reader = new EventLogReader(logQuery);
                 for (EventRecord? record = reader.ReadEvent(); record != null; record = reader.ReadEvent())
                 {
-                    if (record.TimeCreated == null || record.TimeCreated <= _lastEventViewerCheck)
+                    if (record.TimeCreated == null || record.TimeCreated <= checkTime)
                         continue;
 
                     string appName = record.Properties.Count > 0 ? record.Properties[0]?.Value?.ToString() ?? string.Empty : string.Empty;
